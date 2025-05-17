@@ -201,9 +201,6 @@ class MPSAnsatz(SplitTensorAnsatz):
 
     def _split_ar(self, _: grammar.Functor,
                   ar: grammar.Box) -> grammar.Diagrammable:
-        if len(ar.dom) + len(ar.cod) <= self.max_order:
-            return grammar.Box(f'{ar.name}_0', ar.dom, ar.cod, z=ar.z)
-
         if self.uncurry.matches(ar):
             return self.split_functor(self.uncurry.rewrite(ar))
 
