@@ -48,3 +48,4 @@ strict_optional = false
 
 [tool.setuptools_scm]
 write_to = "lambeq/version.py"
+fallback_version = "0.5.0"
