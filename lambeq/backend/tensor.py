@@ -494,10 +494,7 @@ class Cup(grammar.Cup, Box):
 
         super().__init__(left, right)
 
-        arr = np.zeros(left.product ** 2)
-        arr[0] = 1
-        arr[-1] = 1
-        self.data = arr
+        self.data = None
 
     __hash__ = Box.__hash__
     __repr__ = Box.__repr__
