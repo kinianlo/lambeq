@@ -187,8 +187,33 @@ def test_spiders():
                                                                            0, 0, 0, 0, 0, 0, 0, 0,
                                                                            0, 0, 0, 0, 0, 0, 0, 0,
                                                                            0, 0, 0, 0, 0, 0, 0, 1])
+
+    # k-qubit register spiders: S^(k)_{m->n} = sum_i |i..i><i..i|,
+    # where each |i> is a k-qubit register.  Check the emitted circuit
+    # realises this map exactly, for several register and leg counts.
+    def expected_register_spider(k, m, n):
+        dim = 2 ** k
+        mat = np.zeros((dim ** n, dim ** m))
+        for i in range(dim):
+            out_idx = sum(i * dim ** p for p in range(n))
+            in_idx = sum(i * dim ** p for p in range(m))
+            mat[out_idx, in_idx] = 1.0
+        return mat
+
+    for k, m, n in [(2, 2, 1), (2, 1, 2), (2, 2, 3), (2, 3, 2),
+                    (2, 1, 3), (3, 2, 1), (3, 1, 2), (2, 1, 1)]:
+        got = np.asarray(generate_spider(qubit ** k, m, n).eval())
+        got = got.reshape(2 ** (k * n), 2 ** (k * m))
+        assert got == pytest.approx(expected_register_spider(k, m, n))
+
+    # A (1, 1) register spider is just the identity on the register.
+    assert generate_spider(qubit ** 3, 1, 1) == Id(qubit ** 3)
+
+    # Spiders are only defined on qubit types.
     with pytest.raises(NotImplementedError):
-        generate_spider(qubit @ qubit, 2, 3)
+        generate_spider(bit, 2, 1)
+    with pytest.raises(NotImplementedError):
+        generate_spider(bit @ bit, 2, 1)
 
 
 def test_mixed_eval():

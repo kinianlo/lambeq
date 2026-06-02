@@ -679,9 +679,37 @@ def generate_spider(type: Ty, n_legs_in: int, n_legs_out: int) -> Diagram:
     if type == Ty():
         return Id()
 
+    if not type.is_atomic:
+        # A spider on a k-qubit register factorises, by the Frobenius
+        # structure of the Z-spider, into k single-qubit Z-spiders
+        # acting in parallel - one on the j-th qubit of every register:
+        #     S^(k)_{m->n} = (x)_{j=1..k} S_{m->n}.
+        # The register wires arrive register-major (all qubits of
+        # register 1, then all qubits of register 2, ...), so we
+        # interleave them into qubit-major order, apply one single-qubit
+        # spider per qubit position, then restore register-major order
+        # on the outputs.  Reusing the single-qubit construction emits a
+        # genuine circuit (transversal CNOTs, post-selected Bras and
+        # fan-out) with the same normalisation as the single-qubit case.
+        size = len(type)
+        total_legs_in = size * i
+        return (
+            Diagram.permutation(
+                type ** i,
+                [leg for q in range(size)
+                 for leg in range(q, total_legs_in, size)],
+            )
+            >> Diagram.id().tensor(
+                *(generate_spider(atom, i, o) for atom in type)
+            ).permuted(
+                [leg for r in range(o)
+                 for leg in range(r, size * o, o)],
+            )
+        )
+
     if type != qubit:
-        raise NotImplementedError('Multi-qubit spiders are not presently'
-                                  ' supported.')
+        raise NotImplementedError('Spiders are only supported on qubit '
+                                  'types.')
 
     if (i, o) == (1, 0):
         return cast(Diagram, Sqrt(2) @ H >> Bra(0))
