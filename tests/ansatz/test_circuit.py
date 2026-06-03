@@ -1,10 +1,11 @@
+import numpy as np
 import pytest
 
 from lambeq import (AtomicType, IQPAnsatz, Sim14Ansatz, Sim15Ansatz,
                     Sim4Ansatz, Sim9Ansatz, Sim9CxAnsatz,
                     StronglyEntanglingAnsatz, Symbol as sym)
 from lambeq.backend.converters.tk import from_tk
-from lambeq.backend.grammar import Box, Cup, Frame, Ty, Word
+from lambeq.backend.grammar import Box, Cup, Frame, Spider, Ty, Word
 from lambeq.backend.quantum import (Bra, Controlled, CRx, CRz, CX,
                                     Discard, H, Id, Ket, qubit,
                                     Rx, Ry, Rz, Sqrt, X, CZ)
@@ -204,6 +205,37 @@ def test_postselection():
 
     assert ansatz_iqp(b)
     assert ansatz_s15(b)
+
+
+def _expected_register_spider(k, n_legs_in, n_legs_out):
+    # The k-qubit register spider: sum_i |i..i><i..i|, where each |i> is a
+    # k-qubit register held identically on every leg.
+    dim = 2 ** k
+    mat = np.zeros((dim ** n_legs_out, dim ** n_legs_in))
+    for i in range(dim):
+        out_idx = sum(i * dim ** p for p in range(n_legs_out))
+        in_idx = sum(i * dim ** p for p in range(n_legs_in))
+        mat[out_idx, in_idx] = 1.0
+    return mat
+
+
+@pytest.mark.parametrize('Ansatz', ansatze)
+def test_ansatz_multiqubit_spider(Ansatz):
+    # When an ansatz maps a wire to k >= 2 qubits, a grammar Spider on that
+    # wire must become the k-qubit register spider.  The Spider dispatches
+    # through the quantum backend's generate_spider (via special_boxes),
+    # independently of the chosen ansatz, so every circuit ansatz must
+    # realise the same map exactly.  This is the path that previously raised
+    # NotImplementedError for multi-qubit registers.
+    n = Ty('n')
+    k = 2
+    for n_legs_in, n_legs_out in [(1, 2), (2, 1), (2, 3), (3, 2)]:
+        ansatz = Ansatz({n: k}, n_layers=1)
+        circuit = ansatz(Spider(n, n_legs_in, n_legs_out))
+        got = np.asarray(circuit.eval()).reshape(2 ** (k * n_legs_out),
+                                                 2 ** (k * n_legs_in))
+        assert got == pytest.approx(
+            _expected_register_spider(k, n_legs_in, n_legs_out))
 
 
 def test_strongly_entangling_ansatz(diagram):
