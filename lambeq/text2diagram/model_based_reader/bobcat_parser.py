@@ -56,6 +56,9 @@ class BobcatParseError(Exception):
         return f'Bobcat failed to parse {self.sentence!r}.'
 
 
+# Worker state for parallel chart parsing. The workers must stay
+# pure-Python and never touch torch/CUDA: under the fork start method
+# they inherit the parent's CUDA context, which must not be used.
 _worker_parser: ChartParser | None = None
 _worker_tags: list[str] | None = None
 _worker_suppress_exceptions = False
@@ -271,8 +274,11 @@ class BobcatParser(ModelBasedReader, CCGParser):
             parser.
         n_jobs : int, default: 1
             The number of processes used for chart parsing the tagged
-            sentences. Use -1 for all available cores. The tagger stage
-            is unaffected.
+            sentences; -1 (the only accepted negative value) uses all
+            available cores. The tagger stage is unaffected. On
+            platforms where multiprocessing starts processes by
+            spawning (e.g. macOS, Windows), the calling script must be
+            guarded by `if __name__ == '__main__':`.
 
         Returns
         -------
@@ -287,7 +293,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
             raise ValueError(f'`{verbose}` is not a valid verbose value for '
                              'BobcatParser.')
 
-        if not (n_jobs == -1 or n_jobs >= 1):
+        if not (isinstance(n_jobs, int) and (n_jobs == -1 or n_jobs >= 1)):
             raise ValueError(f'Invalid `n_jobs`: {n_jobs}')
 
         sentences_valid, empty_indices = self.validate_sentence_batch(

@@ -314,6 +314,21 @@ def test_invalid_n_jobs(bobcat_parser, sentence):
         bobcat_parser.sentences2trees([sentence], n_jobs=0)
 
 
+def test_invalid_n_jobs_non_integer(bobcat_parser, sentence):
+    with pytest.raises(ValueError):
+        bobcat_parser.sentences2trees([sentence], n_jobs=2.0)
+
+
+def test_parallel_parsing_with_empty_sentence(bobcat_parser):
+    sentences = ['Alice likes Bob', '', 'I do']
+    trees = bobcat_parser.sentences2trees(
+        sentences, n_jobs=2, suppress_exceptions=True,
+        verbose=VerbosityLevel.SUPPRESS.value)
+    assert trees[0] is not None
+    assert trees[1] is None
+    assert trees[2] is not None
+
+
 def test_reduced_precision_tagging(bobcat_parser, sentence):
     tagger = bobcat_parser.tagger
     assert tagger.dtype is None
