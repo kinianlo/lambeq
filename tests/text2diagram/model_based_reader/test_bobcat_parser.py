@@ -228,3 +228,21 @@ def test_tagger_uses_inference_mode(bobcat_parser):
     finally:
         handle.remove()
     assert recorded == [True]
+
+
+def test_make_batches_sorts_by_length(bobcat_parser):
+    sentences = [['a'] * n for n in (5, 1, 3, 2, 4)]
+    batches = bobcat_parser.tagger.make_batches(sentences, batch_size=2)
+    assert batches == [[1, 3], [2, 4], [0]]
+
+
+def test_tagger_restores_input_order(bobcat_parser):
+    sentences = [
+        'Alice likes Bob and Claire likes Dave'.split(),
+        'Alice likes Bob'.split(),
+        'I do'.split(),
+        'What Alice is and is not .'.split(),
+    ]
+    output = bobcat_parser.tagger(sentences, batch_size=2,
+                                  verbose=VerbosityLevel.SUPPRESS.value)
+    assert [s.words for s in output.sentences] == sentences

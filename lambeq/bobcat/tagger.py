@@ -26,11 +26,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 import math
-from typing import Any, List, Tuple
+from typing import Any, cast, List, Tuple
 
 import torch
 from torch import nn
-from tqdm.auto import trange
+from tqdm.auto import tqdm
 from transformers import (BertConfig, BertModel, BertPreTrainedModel,
                           PreTrainedModel, PreTrainedTokenizerFast)
 from transformers.modeling_outputs import ModelOutput
@@ -393,6 +393,20 @@ class Tagger:
         return [TaggerOutputSentence(list(words), tags, spans)
                 for words, tags, spans in zip(inputs, tag_output, spans_list)]
 
+    def make_batches(self,
+                     inputs: Sequence[Sequence[str]],
+                     batch_size: int) -> list[list[int]]:
+        """Group sentence indices into length-sorted batches.
+
+        Batching sentences of similar length together avoids wasting
+        compute on padding, which is especially costly for the span
+        classifier whose size grows quadratically with sentence length.
+
+        """
+        order = sorted(range(len(inputs)), key=lambda i: len(inputs[i]))
+        return [order[i:i + batch_size]
+                for i in range(0, len(order), batch_size)]
+
     def __call__(self,
                  inputs: Sequence[Sequence[str]],
                  batch_size: int | None = None,
@@ -401,14 +415,17 @@ class Tagger:
         if batch_size is None:
             batch_size = self.batch_size
 
-        output = TaggerOutput(tags=self.model.config.tags,
-                              cats=self.model.config.cats,
-                              sentences=[])
+        sentences: list[TaggerOutputSentence | None] = [None] * len(inputs)
+        for batch in tqdm(
+                self.make_batches(inputs, batch_size),
+                desc='Tagging sentences',
+                leave=False,
+                disable=verbose != VerbosityLevel.PROGRESS.value):
+            results = self.parse([inputs[i] for i in batch])
+            for i, sentence in zip(batch, results):
+                sentences[i] = sentence
 
-        for i in trange(0, len(inputs), batch_size,
-                        desc='Tagging sentences',
-                        leave=False,
-                        disable=verbose != VerbosityLevel.PROGRESS.value):
-            output.sentences.extend(self.parse(inputs[i:i+batch_size]))
-
-        return output
+        return TaggerOutput(
+                tags=self.model.config.tags,
+                cats=self.model.config.cats,
+                sentences=cast(List[TaggerOutputSentence], sentences))

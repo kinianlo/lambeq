@@ -29,3 +29,25 @@ chart parsing:    0.20s (1007.4 sent/s)
 end-to-end:       8.38s (23.9 sent/s)
 peak RSS:         2505 MB
 ```
+
+## After length-sorted batching (Task 3)
+
+```
+command:          /tmp/bobcat_bench.txt --num 200
+config:           {} device=cpu
+sentences:        200 (0 failed)
+tagging:          7.33s (27.3 sent/s)
+chart parsing:    0.22s (920.8 sent/s)
+end-to-end:       7.55s (26.5 sent/s)
+peak RSS:         2513 MB
+```
+
+```
+command:          /tmp/bobcat_bench.txt --num 200 --batch-size 32
+config:           {'batch_size': 32} device=cpu
+sentences:        200 (0 failed)
+tagging:          3.53s (56.7 sent/s)
+chart parsing:    0.19s (1071.2 sent/s)
+end-to-end:       3.72s (53.8 sent/s)
+peak RSS:         2620 MB
+```
