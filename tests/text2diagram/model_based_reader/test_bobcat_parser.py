@@ -298,6 +298,22 @@ def test_invalid_dtype(bobcat_parser):
                dtype='float8')
 
 
+def test_parallel_parsing_matches_serial(bobcat_parser):
+    sentences = ['Alice likes Bob',
+                 'What Alice is and is not .',
+                 'I do not like Bob']
+    serial = bobcat_parser.sentences2trees(
+        sentences, verbose=VerbosityLevel.SUPPRESS.value)
+    parallel = bobcat_parser.sentences2trees(
+        sentences, n_jobs=2, verbose=VerbosityLevel.SUPPRESS.value)
+    assert parallel == serial
+
+
+def test_invalid_n_jobs(bobcat_parser, sentence):
+    with pytest.raises(ValueError):
+        bobcat_parser.sentences2trees([sentence], n_jobs=0)
+
+
 def test_reduced_precision_tagging(bobcat_parser, sentence):
     tagger = bobcat_parser.tagger
     assert tagger.dtype is None

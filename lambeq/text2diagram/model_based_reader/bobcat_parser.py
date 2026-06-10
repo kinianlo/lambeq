@@ -25,6 +25,8 @@ __all__ = ['BobcatParser', 'BobcatParseError']
 
 from collections.abc import Iterable
 import json
+import multiprocessing
+import os
 import sys
 from typing import Any
 
@@ -52,6 +54,32 @@ class BobcatParseError(Exception):
 
     def __str__(self) -> str:
         return f'Bobcat failed to parse {self.sentence!r}.'
+
+
+_worker_parser: ChartParser | None = None
+_worker_tags: list[str] | None = None
+_worker_suppress_exceptions = False
+
+
+def _init_worker(parser: ChartParser,
+                 tags: list[str],
+                 suppress_exceptions: bool) -> None:
+    global _worker_parser, _worker_tags, _worker_suppress_exceptions
+    _worker_parser = parser
+    _worker_tags = tags
+    _worker_suppress_exceptions = suppress_exceptions
+
+
+def _parse_tagged_sentence(sent: TaggerOutputSentence) -> CCGTree | None:
+    assert _worker_parser is not None and _worker_tags is not None
+    try:
+        sentence_input = BobcatParser._prepare_sentence(sent, _worker_tags)
+        result = _worker_parser(sentence_input)
+        return BobcatParser._build_ccgtree(result[0])
+    except Exception as e:
+        if _worker_suppress_exceptions:
+            return None
+        raise BobcatParseError(' '.join(sent.words)) from e
 
 
 class BobcatParser(ModelBasedReader, CCGParser):
@@ -221,7 +249,8 @@ class BobcatParser(ModelBasedReader, CCGParser):
         sentences: SentenceBatchType,
         tokenised: bool = False,
         suppress_exceptions: bool = False,
-        verbose: str | None = None
+        verbose: str | None = None,
+        n_jobs: int = 1
     ) -> list[CCGTree] | None:
         """Parse multiple sentences into a list of :py:class:`.CCGTree` s.
 
@@ -240,6 +269,10 @@ class BobcatParser(ModelBasedReader, CCGParser):
             See :py:class:`VerbosityLevel` for options. If set, takes
             priority over the :py:attr:`verbose` attribute of the
             parser.
+        n_jobs : int, default: 1
+            The number of processes used for chart parsing the tagged
+            sentences. Use -1 for all available cores. The tagger stage
+            is unaffected.
 
         Returns
         -------
@@ -253,6 +286,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if not VerbosityLevel.has_value(verbose):
             raise ValueError(f'`{verbose}` is not a valid verbose value for '
                              'BobcatParser.')
+
+        if not (n_jobs == -1 or n_jobs >= 1):
+            raise ValueError(f'Invalid `n_jobs`: {n_jobs}')
 
         sentences_valid, empty_indices = self.validate_sentence_batch(
             sentences,
@@ -268,21 +304,37 @@ class BobcatParser(ModelBasedReader, CCGParser):
             tags = tag_results.tags
             if verbose == VerbosityLevel.TEXT.value:
                 print('Parsing tagged sentences.', file=sys.stderr)
-            for sent in tqdm(
-                    tag_results.sentences,
-                    desc='Parsing tagged sentences',
-                    leave=False,
-                    disable=verbose != VerbosityLevel.PROGRESS.value):
+            if n_jobs == 1:
+                for sent in tqdm(
+                        tag_results.sentences,
+                        desc='Parsing tagged sentences',
+                        leave=False,
+                        disable=verbose != VerbosityLevel.PROGRESS.value):
 
-                try:
-                    sentence_input = self._prepare_sentence(sent, tags)
-                    result = self.parser(sentence_input)
-                    trees.append(self._build_ccgtree(result[0]))
-                except Exception as e:
-                    if suppress_exceptions:
-                        trees.append(None)
-                    else:
-                        raise BobcatParseError(' '.join(sent.words)) from e
+                    try:
+                        sentence_input = self._prepare_sentence(sent, tags)
+                        result = self.parser(sentence_input)
+                        trees.append(self._build_ccgtree(result[0]))
+                    except Exception as e:
+                        if suppress_exceptions:
+                            trees.append(None)
+                        else:
+                            raise BobcatParseError(' '.join(sent.words)) from e
+            else:
+                processes = os.cpu_count() if n_jobs == -1 else n_jobs
+                with multiprocessing.Pool(
+                        processes,
+                        initializer=_init_worker,
+                        initargs=(self.parser,
+                                  tags,
+                                  suppress_exceptions)) as pool:
+                    trees = list(tqdm(
+                        pool.imap(_parse_tagged_sentence,
+                                  tag_results.sentences),
+                        desc='Parsing tagged sentences',
+                        total=len(tag_results.sentences),
+                        leave=False,
+                        disable=verbose != VerbosityLevel.PROGRESS.value))
 
         for i in empty_indices:
             trees.insert(i, None)
