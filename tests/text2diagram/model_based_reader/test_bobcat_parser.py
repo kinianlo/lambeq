@@ -246,3 +246,8 @@ def test_tagger_restores_input_order(bobcat_parser):
     output = bobcat_parser.tagger(sentences, batch_size=2,
                                   verbose=VerbosityLevel.SUPPRESS.value)
     assert [s.words for s in output.sentences] == sentences
+
+
+def test_tagger_invalid_batch_size_override(bobcat_parser):
+    with pytest.raises(ValueError):
+        bobcat_parser.tagger([['a']], batch_size=-1)

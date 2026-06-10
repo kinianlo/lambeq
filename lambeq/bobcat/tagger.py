@@ -414,6 +414,8 @@ class Tagger:
         """Parse a list of sentences."""
         if batch_size is None:
             batch_size = self.batch_size
+        elif batch_size < 1:
+            raise ValueError(f'Invalid `batch_size`: {batch_size}')
 
         sentences: list[TaggerOutputSentence | None] = [None] * len(inputs)
         for batch in tqdm(
