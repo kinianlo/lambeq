@@ -356,9 +356,13 @@ class BobcatParser(ModelBasedReader, CCGParser):
                                    for sent in tag_results.sentences]
                 try:
                     parse_trees = self.parser.parse_batch(sentence_inputs)
-                except Exception as e:
-                    # a Rust panic surfaces here; per-sentence failures
-                    # come back as None, so this is a whole-batch bug
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except BaseException as e:
+                    # a Rust panic surfaces here as PanicException, which
+                    # derives from BaseException, not Exception;
+                    # per-sentence failures come back as None, so this is
+                    # a whole-batch bug
                     if suppress_exceptions:
                         parse_trees = [None] * len(sentence_inputs)
                     else:
