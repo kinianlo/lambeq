@@ -354,3 +354,22 @@ The marginal rayon advantage on short sentences reflects the lower per-sentence 
 work — parallelism overhead is proportionally larger when each parse is already cheap.
 End-to-end throughput on the long corpus improves from 10.5 to 13.1 sent/s because
 chart parsing drops from 24% of total time to under 2%.
+
+## Rust CKY core — Lab 105 `goosander-l`, RTX 3090 Ti (GPU tagger)
+
+| corpus | backend | tagging | chart serial | chart parse_batch | end-to-end |
+|--------|---------|--------:|-------------:|------------------:|-----------:|
+| long (187, batch 16)  | python | 283.4 | 73.9 | — | 58.6 |
+| long (187, batch 16)  | rust   | 305.2 | 1354.2 | 4325.6 | 249.1 |
+| long + fp16           | rust   | 295.1 | 1323.7 | 4545.2 | 241.3 |
+| short (750, batch 128 + fp16) | rust | 2425.7 | 9843.5 | 30872.8 | 1946.1 |
+
+(sent/s; end-to-end uses the serial chart number — the integrated batch
+path is faster still.)
+
+Summary: chart stage on long sentences 2.53s -> 0.14s serial (18x) ->
+0.04s with rayon (63x). End-to-end long-sentence throughput 58.6 ->
+249.1 sent/s (4.3x vs the Tier-1 python backend; 4.9x vs main). The
+chart parser is no longer the bottleneck on GPU: tagging now dominates
+(0.61s vs 0.04s). Short corpus end-to-end reaches 1946 sent/s
+(6.6x vs main's 297 sent/s best on this machine).
