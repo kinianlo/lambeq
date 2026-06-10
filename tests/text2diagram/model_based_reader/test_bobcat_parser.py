@@ -289,3 +289,20 @@ def test_invalid_max_spans_per_batch(bobcat_parser):
         Tagger(bobcat_parser.tagger.model,
                bobcat_parser.tagger.tokenizer,
                max_spans_per_batch=0)
+
+
+def test_invalid_dtype(bobcat_parser):
+    with pytest.raises(ValueError):
+        Tagger(bobcat_parser.tagger.model,
+               bobcat_parser.tagger.tokenizer,
+               dtype='float8')
+
+
+def test_reduced_precision_tagging(bobcat_parser, sentence):
+    tagger = bobcat_parser.tagger
+    assert tagger.dtype is None
+    tagger.dtype = 'bfloat16'
+    try:
+        assert bobcat_parser.sentence2tree(sentence) is not None
+    finally:
+        tagger.dtype = None

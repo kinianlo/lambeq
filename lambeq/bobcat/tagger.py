@@ -23,6 +23,7 @@ Apache License 2.0.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 import math
@@ -98,6 +99,12 @@ def extract_topk(logits: torch.Tensor,
         highest scoring entry, otherwise it is absolute.
     skip_index_0 : bool
         Whether entries for class index 0 should be dropped.
+
+    Returns
+    -------
+    list of list of list of tuple of int and float
+        For each batch entry, for each position, the kept entries as
+        (class index, log probability) tuples.
 
     """
     logits = logits.float()  # autocast may produce reduced precision
@@ -338,7 +345,8 @@ class Tagger:
                  span_top_k: int = 1,
                  span_prob_threshold: float = 1,
                  span_prob_threshold_strategy: str = 'relative',
-                 max_spans_per_batch: int | None = None) -> None:
+                 max_spans_per_batch: int | None = None,
+                 dtype: str | None = None) -> None:
         strategies = ('absolute', 'relative')
 
         if not (batch_size >= 1 and batch_size == int(batch_size)):
@@ -367,6 +375,9 @@ class Tagger:
             raise ValueError('Invalid `max_spans_per_batch`: '
                              f'{max_spans_per_batch}')
 
+        if dtype is not None and dtype not in ('float16', 'bfloat16'):
+            raise ValueError(f'Invalid `dtype`: {dtype}')
+
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size = int(batch_size)
@@ -378,6 +389,7 @@ class Tagger:
         self.span_prob_threshold_strategy = span_prob_threshold_strategy
         self.max_spans_per_batch = (None if max_spans_per_batch is None
                                     else int(max_spans_per_batch))
+        self.dtype = dtype
 
     def prepare_inputs(self,
                        inputs: Sequence[Sequence[str]],
@@ -403,8 +415,15 @@ class Tagger:
               inputs: Sequence[Sequence[str]]) -> list[TaggerOutputSentence]:
         """Parse a batch of sentences."""
         encodings = self.prepare_inputs(inputs, word_mask=True)
-        outputs = self.model(**{k: torch.as_tensor(v, device=self.model.device)
-                                for k, v in encodings.items()})
+        if self.dtype is None:
+            autocast = contextlib.nullcontext()
+        else:
+            autocast = torch.autocast(device_type=self.model.device.type,
+                                      dtype=getattr(torch, self.dtype))
+        with autocast:
+            outputs = self.model(
+                **{k: torch.as_tensor(v, device=self.model.device)
+                   for k, v in encodings.items()})
 
         tag_lengths = [len(sentence) for sentence in inputs]
         span_lengths = [chart_size(length) for length in tag_lengths]

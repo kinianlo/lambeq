@@ -129,6 +129,11 @@ class BobcatParser(ModelBasedReader, CCGParser):
             sentences as fit in this padded span count, capping memory
             usage per batch. A single sentence exceeding the budget on
             its own still forms its own batch.
+        dtype : str, optional
+            If set (e.g. `'float16'` or `'bfloat16'`), the tagger
+            forward pass runs under `torch.autocast` with this dtype,
+            trading a little numerical precision for speed and memory.
+            Use `'bfloat16'` on CPU; on CUDA both usually work.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
@@ -179,7 +184,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                     pass
 
         # parameters that postdate the shipped pipeline_config.json
-        for key in ('max_spans_per_batch',):
+        for key in ('max_spans_per_batch', 'dtype'):
             if key in kwargs:
                 config['tagger'][key] = kwargs.pop(key)
 

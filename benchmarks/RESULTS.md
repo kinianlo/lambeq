@@ -85,3 +85,17 @@ chart parsing:    0.19s (1053.3 sent/s)
 end-to-end:       3.91s (51.2 sent/s)
 peak RSS:         2609 MB
 ```
+
+## After opt-in dtype (Task 6)
+
+```
+command:          /tmp/bobcat_bench.txt --num 200 --batch-size 32 --dtype bfloat16
+config:           {'batch_size': 32, 'dtype': 'bfloat16'} device=cpu
+sentences:        200 (0 failed)
+tagging:          10.10s (19.8 sent/s)
+chart parsing:    0.19s (1061.6 sent/s)
+end-to-end:       10.29s (19.4 sent/s)
+peak RSS:         3455 MB
+```
+
+CPU bfloat16 autocast is slower than fp32 on this AVX-512-less laptop (10.10s vs 3.72s); failures stayed at 0. The `--dtype` flag is intended to accelerate GPU inference where bfloat16/float16 is natively fast.

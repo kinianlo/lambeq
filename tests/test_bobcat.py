@@ -52,3 +52,14 @@ def test_extract_topk_matches_reference(strategy, skip_index_0,
                          strategy, skip_index_0)
             == reference_extract(logits, lengths, top_k, prob_threshold,
                                  strategy, skip_index_0))
+
+
+@pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])
+def test_extract_topk_accepts_reduced_precision(dtype):
+    torch.manual_seed(0)
+    logits = torch.randn(2, 5, 11).to(dtype)
+    lengths = [5, 3]
+    result = extract_topk(logits, lengths, 5, 0.01, 'relative', False)
+    expected = reference_extract(logits.float(), lengths, 5, 0.01,
+                                 'relative', False)
+    assert result == expected
