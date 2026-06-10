@@ -6,11 +6,14 @@ Machine: Intel Core i7-11800H @ 2.30GHz, GPU: RTX 3080 Laptop present but CUDA u
 
 ## Baseline (before optimizations)
 
+Note: model default tagger batch_size is 4 (from pipeline_config.json).
+
 ```
-config:           {} {} device=cpu
+command:          /tmp/bobcat_bench.txt --num 200
+config:           {} device=cpu
 sentences:        200 (0 failed)
-tagging:          8.19s (24.4 sent/s)
-chart parsing:    0.24s (842.5 sent/s)
-end-to-end:       8.43s (23.7 sent/s)
+tagging:          9.05s (22.1 sent/s)
+chart parsing:    0.21s (937.2 sent/s)
+end-to-end:       9.27s (21.6 sent/s)
 peak RSS:         2650 MB
 ```

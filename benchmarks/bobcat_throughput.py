@@ -3,12 +3,14 @@
 
 Reads a text file with one (whitespace-tokenisable) sentence per line and
 reports tagging time, chart-parsing time, sentences/sec and peak memory.
+The input is assumed to be clean: non-empty, whitespace-tokenisable lines.
 
 Example:
     python benchmarks/bobcat_throughput.py sentences.txt --device cuda
 """
 import argparse
 import resource
+import sys
 import time
 
 import torch
@@ -23,6 +25,10 @@ def peak_rss_mb() -> float:
     return (self_kb + children_kb) / 1024
 
 
+def rate(n: int, seconds: float) -> str:
+    return f'{n / seconds:.1f} sent/s' if seconds > 0 else 'n/a'
+
+
 def main() -> None:
     argp = argparse.ArgumentParser(description=__doc__)
     argp.add_argument('sentence_file',
@@ -30,6 +36,9 @@ def main() -> None:
     argp.add_argument('--device', default='cpu')
     argp.add_argument('--num', type=int, default=None,
                       help='use only the first NUM sentences')
+    # --batch-size works today; the remaining flags are wired for
+    # features added in later tasks of the throughput plan and fail
+    # with a TypeError until those tasks land
     argp.add_argument('--batch-size', type=int, default=None)
     argp.add_argument('--max-spans-per-batch', type=int, default=None)
     argp.add_argument('--dtype', default=None,
@@ -53,44 +62,55 @@ def main() -> None:
                           verbose=VerbosityLevel.SUPPRESS.value,
                           **kwargs)
 
-    parse_kwargs = {}
-    if args.n_jobs != 1:
-        parse_kwargs['n_jobs'] = args.n_jobs
-
     cuda = torch.device(args.device).type == 'cuda'
-    if cuda:
-        torch.cuda.reset_peak_memory_stats()
 
     # warm-up: initialise lazy state (e.g. CUDA kernels)
     parser.sentences2trees([['Alice', 'likes', 'Bob']], tokenised=True)
+    if cuda:
+        torch.cuda.reset_peak_memory_stats()
 
-    # Stage timing: the tagger is timed standalone, then the full
-    # pipeline is timed; chart-parse time is the difference (the tagger
-    # therefore runs twice, which is accepted for simplicity).
+    # stage 1: supertagging
     start = time.perf_counter()
-    parser.tagger(sentences, verbose=VerbosityLevel.SUPPRESS.value)
+    tag_results = parser.tagger(sentences,
+                                verbose=VerbosityLevel.SUPPRESS.value)
     if cuda:
         torch.cuda.synchronize()
     tag_time = time.perf_counter() - start
 
+    # stage 2: serial chart parsing of the tagged sentences, timed
+    # directly by mirroring the loop in BobcatParser.sentences2trees
+    failures = 0
     start = time.perf_counter()
-    trees = parser.sentences2trees(sentences,
-                                   tokenised=True,
-                                   suppress_exceptions=True,
-                                   **parse_kwargs)
-    pipeline_time = time.perf_counter() - start
+    for sent in tag_results.sentences:
+        try:
+            sentence_input = parser._prepare_sentence(sent, tag_results.tags)
+            result = parser.parser(sentence_input)
+            parser._build_ccgtree(result[0])
+        except Exception:
+            failures += 1
+    parse_time = time.perf_counter() - start
 
-    parse_time = pipeline_time - tag_time
     n = len(sentences)
-    failures = sum(tree is None for tree in trees)
-
-    print(f'config:           {kwargs} {parse_kwargs} '
-          f'device={args.device}')
+    total = tag_time + parse_time
+    print(f'command:          {" ".join(sys.argv[1:])}')
+    print(f'config:           {kwargs} device={args.device}')
     print(f'sentences:        {n} ({failures} failed)')
-    print(f'tagging:          {tag_time:.2f}s ({n / tag_time:.1f} sent/s)')
-    print(f'chart parsing:    {parse_time:.2f}s ({n / parse_time:.1f} sent/s)')
-    print(f'end-to-end:       {pipeline_time:.2f}s '
-          f'({n / pipeline_time:.1f} sent/s)')
+    print(f'tagging:          {tag_time:.2f}s ({rate(n, tag_time)})')
+    print(f'chart parsing:    {parse_time:.2f}s ({rate(n, parse_time)})')
+    print(f'end-to-end:       {total:.2f}s ({rate(n, total)})')
+
+    if args.n_jobs != 1:
+        # parallel chart parsing happens inside sentences2trees;
+        # compare its end-to-end time against tag_time + parse_time
+        start = time.perf_counter()
+        parser.sentences2trees(sentences,
+                               tokenised=True,
+                               suppress_exceptions=True,
+                               n_jobs=args.n_jobs)
+        njobs_time = time.perf_counter() - start
+        print(f'end-to-end (n_jobs={args.n_jobs}): '
+              f'{njobs_time:.2f}s ({rate(n, njobs_time)})')
+
     print(f'peak RSS:         {peak_rss_mb():.0f} MB')
     if cuda:
         print(f'peak CUDA memory: '
