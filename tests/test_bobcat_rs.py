@@ -180,3 +180,60 @@ def test_left_comma_type_change_fires(py_rules_full, rs_rules_full):
             assert got == expected, (left_str, right_str)
             fired += [r for r, _ in expected if r in ('LP', 'RP')]
     assert fired
+
+
+@pytest.fixture(scope='module')
+def bobcat_parser():
+    from lambeq import BobcatParser, VerbosityLevel
+    return BobcatParser(verbose=VerbosityLevel.SUPPRESS.value)
+
+
+@pytest.fixture(scope='module')
+def rs_parser(grammar_data, bobcat_parser):
+    return bobcat_rs.RustChartParser(
+        grammar_data['categories'],
+        [tuple(r) for r in grammar_data['binary_rules']],
+        [tuple(r) for r in grammar_data['type_changing_rules']],
+        [tuple(r) for r in grammar_data['type_raising_rules']],
+        bobcat_parser.tagger.model.config.cats,
+        None, True, 50000, 32, 1.0, 0.01, 1e-05)
+
+
+SENTENCES = [
+    'Alice likes Bob',
+    'What Alice is and is not .',
+    'I do not like Bob',
+    'the old man sees a book about science in the park',
+    'Alice likes Bob and the cat follows the dog while my neighbour '
+    'reads a long and boring report before breakfast',
+]
+
+
+def _tagged(bobcat_parser, sentences):
+    return bobcat_parser.tagger([s.split() for s in sentences],
+                                verbose='suppress')
+
+
+def _rust_inputs(bobcat_parser, tag_output):
+    inputs = []
+    for sent in tag_output.sentences:
+        si = bobcat_parser._prepare_sentence(sent, tag_output.tags)
+        supertags = [[(st.category, st.probability) for st in sts]
+                     for sts in si.input_supertags]
+        inputs.append((si.words, supertags, si.span_scores))
+    return inputs
+
+
+def test_serial_parse_equivalence(bobcat_parser, rs_parser):
+    from lambeq.bobcat.rust_backend import nodes_to_tree
+    from lambeq.text2diagram.model_based_reader.bobcat_parser import (
+        BobcatParser)
+    out = _tagged(bobcat_parser, SENTENCES)
+    results = rs_parser.parse_batch(_rust_inputs(bobcat_parser, out))
+    for sent, nodes in zip(out.sentences, results):
+        si = bobcat_parser._prepare_sentence(sent, out.tags)
+        py_tree = bobcat_parser.parser(si)[0]
+        py_ccg = BobcatParser._build_ccgtree(py_tree)
+        assert nodes is not None, ' '.join(sent.words)
+        rs_ccg = BobcatParser._build_ccgtree(nodes_to_tree(nodes))
+        assert rs_ccg == py_ccg, ' '.join(sent.words)

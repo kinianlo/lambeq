@@ -8,13 +8,23 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 
 mod category;
+mod chart;
 mod grammar;
+mod parser;
 mod rules;
 mod tree;
 
 use crate::grammar::Grammar;
+use crate::parser::{serialize_tree, ChartParser, SerNode};
 use crate::rules::Rules;
 use crate::tree::lexical;
+
+/// One sentence's parse input: (words, per-word supertags, span scores).
+type SentenceInput = (
+    Vec<String>,
+    Vec<Vec<(String, f64)>>,
+    HashMap<(u32, u32), HashMap<u32, f64>>,
+);
 
 /// Parse category string `s` with type_raising_dep_var = VARIABLES.index(tr_var).
 /// Returns (plain_str, full_repr).
@@ -156,6 +166,89 @@ impl RustRules {
     }
 }
 
+/// The serial Rust CKY chart parser.
+///
+/// `unsendable` because parse trees use `Rc`/`Cell` and a thread-local
+/// category parse cache; a single sentence is parsed entirely within one
+/// thread. Cross-sentence parallelism (Task 6) keeps each `parse_one`
+/// confined to its own rayon task.
+#[pyclass(unsendable)]
+struct RustChartParser {
+    parser: ChartParser,
+}
+
+#[pymethods]
+impl RustChartParser {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (categories, binary_rules, type_changing_rules,
+                        type_raising_rules, cats, root_cats, eisner_normal_form,
+                        max_parse_trees, beam_size, input_tag_score_weight,
+                        missing_cat_score, missing_span_score))]
+    fn new(
+        categories: HashMap<String, String>,
+        binary_rules: Vec<(String, String)>,
+        type_changing_rules: Vec<(u32, String, Option<String>, String, bool)>,
+        type_raising_rules: Vec<(String, String, String)>,
+        cats: Vec<String>,
+        root_cats: Option<Vec<String>>,
+        eisner_normal_form: bool,
+        max_parse_trees: i64,
+        beam_size: usize,
+        input_tag_score_weight: f64,
+        missing_cat_score: f64,
+        missing_span_score: f64,
+    ) -> PyResult<Self> {
+        let grammar = Grammar::new(
+            categories,
+            &binary_rules,
+            &type_changing_rules,
+            &type_raising_rules,
+        );
+        let parser = ChartParser::new(
+            grammar,
+            &cats,
+            root_cats,
+            eisner_normal_form,
+            max_parse_trees as isize,
+            beam_size,
+            input_tag_score_weight,
+            missing_cat_score,
+            missing_span_score,
+        );
+        Ok(RustChartParser { parser })
+    }
+
+    #[pyo3(signature = (root_cats=None))]
+    fn set_root_cats(&mut self, root_cats: Option<Vec<String>>) -> PyResult<()> {
+        self.parser.set_root_cats(root_cats);
+        Ok(())
+    }
+
+    /// Parse a batch of sentences serially.
+    ///
+    /// `sentences`: `[(words, [[(plain_cat, logp)]], {(i, j): {cat_id: score}})]`.
+    /// Each result is `None` (parse failure) or the post-order node list.
+    /// `num_threads` is accepted (the Python wrapper passes it) but IGNORED
+    /// until Task 6; this path is strictly serial.
+    #[pyo3(signature = (sentences, num_threads = 0))]
+    fn parse_batch(
+        &self,
+        sentences: Vec<SentenceInput>,
+        num_threads: usize,
+    ) -> PyResult<Vec<Option<Vec<SerNode>>>> {
+        let _ = num_threads;
+        Ok(sentences
+            .iter()
+            .map(|(words, supertags, span_scores)| {
+                self.parser
+                    .parse_one(words, supertags, span_scores)
+                    .map(|tree| serialize_tree(&tree))
+            })
+            .collect())
+    }
+}
+
 #[pymodule]
 fn bobcat_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -164,5 +257,6 @@ fn bobcat_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_cat_matches, m)?)?;
     m.add_function(wrap_pyfunction!(debug_cat_vars, m)?)?;
     m.add_class::<RustRules>()?;
+    m.add_class::<RustChartParser>()?;
     Ok(())
 }
