@@ -270,3 +270,25 @@ Notes:
   with "CUDA-capable device(s) is/are busy or unavailable" (exclusive
   compute mode, apparently a stale process); excluding the node with
   `qsub -l h=!mitchell.local` resolved it.
+
+## After extract_topk survivor-only transfer (fix for the long-sentence regression)
+
+`extract_topk` now drops padding positions on-device and transfers only
+mask-surviving entries (`nonzero` + boolean indexing) instead of
+materialising the full padded (batch, positions, k) tensors as Python
+objects. Output unchanged (26-case equivalence suite). This not only
+removes the regression noted above but beats the pre-branch baseline,
+which paid a similar per-row transfer cost.
+
+RTX 3090 Ti (goosander-l), long corpus (187 sentences, batch 16):
+
+| metric                      | before branch | branch pre-fix | branch fixed |
+|-----------------------------|--------------:|---------------:|-------------:|
+| tagging                     |        1.10s  |     1.6-2.0s   |       0.73s  |
+| end-to-end fp16 + n_jobs=-1 |             — |   2.45s (76.2) | 0.98s (191.1)|
+
+RTX 3090 Ti, short corpus (400 sentences, batch 128 + fp16):
+tagging 0.29s -> 0.13s (3017 sent/s); end-to-end 0.55s -> 0.39s
+(1033.9 sent/s, vs 297 sent/s pre-branch default = 3.5x).
+
+CPU (i7-11800H), long corpus batch 16: tagging 16.7s -> 13.8s.
