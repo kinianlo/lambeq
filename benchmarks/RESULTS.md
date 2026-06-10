@@ -292,3 +292,65 @@ tagging 0.29s -> 0.13s (3017 sent/s); end-to-end 0.55s -> 0.39s
 (1033.9 sent/s, vs 297 sent/s pre-branch default = 3.5x).
 
 CPU (i7-11800H), long corpus batch 16: tagging 16.7s -> 13.8s.
+
+## Rust CKY core (bobcat_rs) — laptop CPU (i7-11800H)
+
+Identical-trees gate: 937/937 sentences identical to the Python backend
+(benchmarks/check_equivalence.py).
+
+Long corpus (187 sentences, batch-size 16):
+
+```
+command:          /tmp/bobcat_bench_long.txt --batch-size 16 --parser-backend python
+config:           {'batch_size': 16, 'parser_backend': 'python'} device=cpu
+sentences:        187 (0 failed)
+tagging:          13.54s (13.8 sent/s)
+chart parsing:    4.32s (43.2 sent/s)
+end-to-end:       17.86s (10.5 sent/s)
+peak RSS:         2798 MB
+```
+
+```
+command:          /tmp/bobcat_bench_long.txt --batch-size 16 --parser-backend rust
+config:           {'batch_size': 16, 'parser_backend': 'rust'} device=cpu
+sentences:        187 (0 failed)
+tagging:          13.99s (13.4 sent/s)
+chart parsing:    0.26s (714.1 sent/s)
+chart parse_batch: 0.16s (1189.4 sent/s)
+end-to-end:       14.25s (13.1 sent/s)
+peak RSS:         2775 MB
+```
+
+Short corpus (750 sentences, batch-size 32):
+
+```
+command:          /tmp/bobcat_bench.txt --batch-size 32 --parser-backend python
+config:           {'batch_size': 32, 'parser_backend': 'python'} device=cpu
+sentences:        750 (0 failed)
+tagging:          14.62s (51.3 sent/s)
+chart parsing:    0.90s (833.8 sent/s)
+end-to-end:       15.51s (48.3 sent/s)
+peak RSS:         2625 MB
+```
+
+```
+command:          /tmp/bobcat_bench.txt --batch-size 32 --parser-backend rust
+config:           {'batch_size': 32, 'parser_backend': 'rust'} device=cpu
+sentences:        750 (0 failed)
+tagging:          14.76s (50.8 sent/s)
+chart parsing:    0.14s (5235.4 sent/s)
+chart parse_batch: 0.13s (5754.9 sent/s)
+end-to-end:       14.91s (50.3 sent/s)
+peak RSS:         2615 MB
+```
+
+On the long-sentence corpus (the primary benchmark where chart parsing dominates), Rust
+serial CKY is 16.5x faster than Python serial (714.1 vs 43.2 sent/s), comfortably
+clearing the 5x spec gate. The rayon `parse_batch` path adds a further 1.7x over Rust
+serial on the long corpus (1189.4 sent/s), for a combined 27.5x over Python serial.
+On the short-sentence corpus the gains are smaller but still substantial: Rust serial
+is 6.3x faster (5235.4 vs 833.8 sent/s) and rayon batch reaches 6.9x (5754.9 sent/s).
+The marginal rayon advantage on short sentences reflects the lower per-sentence chart
+work — parallelism overhead is proportionally larger when each parse is already cheap.
+End-to-end throughput on the long corpus improves from 10.5 to 13.1 sent/s because
+chart parsing drops from 24% of total time to under 2%.

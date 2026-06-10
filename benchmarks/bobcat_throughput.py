@@ -46,6 +46,7 @@ def main() -> None:
     argp.add_argument('--dtype', default=None,
                       help="e.g. 'float16' or 'bfloat16'")
     argp.add_argument('--n-jobs', type=int, default=1)
+    argp.add_argument('--parser-backend', default=None)
     args = argp.parse_args()
 
     with open(args.sentence_file) as f:
@@ -59,6 +60,8 @@ def main() -> None:
         kwargs['max_spans_per_batch'] = args.max_spans_per_batch
     if args.dtype is not None:
         kwargs['dtype'] = args.dtype
+    if args.parser_backend is not None:
+        kwargs['parser_backend'] = args.parser_backend
 
     parser = BobcatParser(device=args.device,
                           verbose=VerbosityLevel.SUPPRESS.value,
@@ -99,6 +102,16 @@ def main() -> None:
     print(f'sentences:        {n} ({failures} failed)')
     print(f'tagging:          {tag_time:.2f}s ({rate(n, tag_time)})')
     print(f'chart parsing:    {parse_time:.2f}s ({rate(n, parse_time)})')
+
+    if getattr(parser, 'parser_backend', 'python') == 'rust':
+        sentence_inputs = [parser._prepare_sentence(s, tag_results.tags)
+                           for s in tag_results.sentences]
+        start = time.perf_counter()
+        parser.parser.parse_batch(sentence_inputs)
+        batch_time = time.perf_counter() - start
+        print(f'chart parse_batch: {batch_time:.2f}s '
+              f'({rate(n, batch_time)})')
+
     print(f'end-to-end:       {total:.2f}s ({rate(n, total)})')
 
     if args.n_jobs != 1:
