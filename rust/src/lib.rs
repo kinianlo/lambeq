@@ -1,3 +1,8 @@
+// The two fallible #[pyfunction]s return Result<T, PyErr>.  pyo3's wrapper
+// macro emits a `From<!> for PyErr` coercion that clippy flags as useless;
+// suppress it here since there is no structural workaround.
+#![allow(clippy::useless_conversion)]
+
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -14,26 +19,26 @@ use crate::tree::lexical;
 /// Parse category string `s` with type_raising_dep_var = VARIABLES.index(tr_var).
 /// Returns (plain_str, full_repr).
 #[pyfunction]
-fn debug_parse_category(s: &str, tr_var: &str) -> PyResult<(String, String)> {
-    let tr_char = tr_var
-        .chars()
-        .next()
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("tr_var must be non-empty"))?;
+fn debug_parse_category(s: &str, tr_var: &str) -> Result<(String, String), pyo3::PyErr> {
+    let tr_char = match tr_var.chars().next() {
+        Some(c) => c,
+        None => return Err(pyo3::exceptions::PyValueError::new_err("tr_var must be non-empty")),
+    };
     let cat = category::parse(s, tr_char);
     Ok((cat.to_plain_str(), cat.to_repr_str()))
 }
 
 /// Parse both strings (tr_var='+'), compare with equals.
 #[pyfunction]
-fn debug_cat_eq(a: &str, b: &str) -> PyResult<bool> {
+fn debug_cat_eq(a: &str, b: &str) -> bool {
     let ca = category::parse(a, '+');
     let cb = category::parse(b, '+');
-    Ok(ca.equals(&cb))
+    ca.equals(&cb)
 }
 
 /// Parse category (tr_var='+'), return sorted list of variable ids in the vars bitset.
 #[pyfunction]
-fn debug_cat_vars(s: &str) -> PyResult<Vec<u8>> {
+fn debug_cat_vars(s: &str) -> Vec<u8> {
     let cat = category::parse(s, '+');
     let vars = cat.vars;
     let mut result = Vec::new();
@@ -42,15 +47,15 @@ fn debug_cat_vars(s: &str) -> PyResult<Vec<u8>> {
             result.push(i);
         }
     }
-    Ok(result)
+    result
 }
 
 /// Parse both strings (tr_var='+'), compare with matches (a.matches(b)).
 #[pyfunction]
-fn debug_cat_matches(a: &str, b: &str) -> PyResult<bool> {
+fn debug_cat_matches(a: &str, b: &str) -> bool {
     let ca = category::parse(a, '+');
     let cb = category::parse(b, '+');
-    Ok(ca.matches(&cb))
+    ca.matches(&cb)
 }
 
 /// The CCG rules, holding the parsed grammar tables.
@@ -80,25 +85,15 @@ impl RustRules {
 
     /// Build Lexical trees from the marked-up category table, combine them,
     /// and return `(rule_name, plain_result_category)` pairs.
-    fn debug_combine(&self, left: &str, right: &str) -> PyResult<Vec<(String, String)>> {
-        let cat_l = self
-            .rules
-            .grammar
-            .categories
-            .get(left)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {left}"))
-            })?
-            .clone();
-        let cat_r = self
-            .rules
-            .grammar
-            .categories
-            .get(right)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {right}"))
-            })?
-            .clone();
+    fn debug_combine(&self, left: &str, right: &str) -> Result<Vec<(String, String)>, pyo3::PyErr> {
+        let cat_l = match self.rules.grammar.categories.get(left) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {left}"))),
+        };
+        let cat_r = match self.rules.grammar.categories.get(right) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {right}"))),
+        };
 
         let lt = lexical(cat_l, "l".to_string(), 1);
         let rt = lexical(cat_r, "r".to_string(), 2);

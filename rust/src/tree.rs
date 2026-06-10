@@ -4,6 +4,7 @@
 // Dependency tracking has been REMOVED (it does not gate rule application);
 // only the variable state is kept, because it gates which rules fire.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::category::{CatRef, Category, FEATURE_NONE, FEATURE_X, ATOM_S};
@@ -28,7 +29,7 @@ pub fn empty_var_map() -> VarMap {
 // Rule
 // ---------------------------------------------------------------------------
 
-#[allow(non_camel_case_types, dead_code)]
+#[allow(non_camel_case_types, dead_code, clippy::upper_case_acronyms)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rule {
     NONE,
@@ -86,7 +87,10 @@ pub struct Node {
     pub left: Option<Rc<Node>>,
     pub right: Option<Rc<Node>>,
     pub var_map: VarMap,
-    pub score: f64,
+    /// Mutated after construction (parser scoring), matching the Python
+    /// oracle. Cell makes Node !Sync: nodes must stay within a single
+    /// rayon task (parallelism is across sentences, never within one).
+    pub score: std::cell::Cell<f64>,
     /// `(word, index)` for leaves; `None` otherwise.
     pub word: Option<(String, u32)>,
 }
@@ -134,7 +138,7 @@ pub fn lexical(cat: CatRef, word: String, index: u32) -> Rc<Node> {
         left: None,
         right: None,
         var_map,
-        score: 0.0,
+        score: Cell::new(0.0),
         word: Some((word, index)),
     })
 }
@@ -143,9 +147,9 @@ pub fn lexical(cat: CatRef, word: String, index: u32) -> Rc<Node> {
 /// present entry's `filled` set to false.
 pub fn coordination(cat: CatRef, left: Rc<Node>, right: Rc<Node>) -> Rc<Node> {
     let mut var_map = empty_var_map();
-    for i in 0..VAR_SLOTS {
-        if right.var_map[i].is_some() {
-            var_map[i] = Some(false);
+    for (slot, right_slot) in var_map.iter_mut().zip(right.var_map.iter()) {
+        if right_slot.is_some() {
+            *slot = Some(false);
         }
     }
     Rc::new(Node {
@@ -154,13 +158,13 @@ pub fn coordination(cat: CatRef, left: Rc<Node>, right: Rc<Node>) -> Rc<Node> {
         left: Some(left),
         right: Some(right),
         var_map,
-        score: 0.0,
+        score: Cell::new(0.0),
         word: None,
     })
 }
 
 /// tree.py:321-347 (`TypeChanging`), variable logic only.
-#[allow(dead_code)]
+#[allow(dead_code)] // TODO(Task 3): wired by type-changing/raising rules
 pub fn type_changing(
     rule: Rule,
     cat: CatRef,
@@ -186,7 +190,7 @@ pub fn type_changing(
         left: Some(left),
         right,
         var_map,
-        score: 0.0,
+        score: Cell::new(0.0),
         word: None,
     })
 }
@@ -204,7 +208,7 @@ pub fn pass_through(
         var_map: passthrough.var_map,
         left: Some(left),
         right: Some(right),
-        score: 0.0,
+        score: Cell::new(0.0),
         word: None,
     })
 }
@@ -229,7 +233,7 @@ pub fn adjectival_conj_tree(left: Rc<Node>, right: Rc<Node>) -> Rc<Node> {
 
 /// tree.py:375-388 (`TypeRaising`). var_map = {1: left.var_map[left.cat.var]}
 /// when present. Rule FTR if cat.fwd else BTR.
-#[allow(dead_code)]
+#[allow(dead_code)] // TODO(Task 3): wired by type-changing/raising rules
 pub fn type_raising(cat: CatRef, left: Rc<Node>) -> Rc<Node> {
     let mut var_map = empty_var_map();
     if let Some(filled) = left.var_map[left.cat.var as usize] {
@@ -242,7 +246,7 @@ pub fn type_raising(cat: CatRef, left: Rc<Node>) -> Rc<Node> {
         left: Some(left),
         right: None,
         var_map,
-        score: 0.0,
+        score: Cell::new(0.0),
         word: None,
     })
 }
@@ -257,12 +261,12 @@ pub fn binary_combinator(
     u: &Unify,
 ) -> Rc<Node> {
     let mut var_map = empty_var_map();
-    for i in 1..u.num_variables {
+    for (i, slot) in var_map.iter_mut().enumerate().skip(1).take(u.num_variables - 1) {
         let left_entry = u.old_left[i].and_then(|ov| left.var_map[ov as usize]);
         let right_entry = u.old_right[i].and_then(|ov| right.var_map[ov as usize]);
         // Both -> Variable.__add__ (filled True); exactly one -> as_filled(True).
         if left_entry.is_some() || right_entry.is_some() {
-            var_map[i] = Some(true);
+            *slot = Some(true);
         }
     }
     Rc::new(Node {
@@ -271,7 +275,7 @@ pub fn binary_combinator(
         left: Some(left),
         right: Some(right),
         var_map,
-        score: 0.0,
+        score: Cell::new(0.0),
         word: None,
     })
 }

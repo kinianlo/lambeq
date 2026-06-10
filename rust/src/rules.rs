@@ -75,20 +75,20 @@ impl Rules {
         let lk = CatKind::of(&left.cat);
         let rk = CatKind::of(&right.cat);
 
-        let mut results: Vec<Option<Rc<Node>>> = Vec::new();
+        let mut results: Vec<Rc<Node>> = Vec::new();
 
         if lk == CatKind::Atom && rk == CatKind::Backward {
-            results.push(self.backward_application(left, right));
+            if let Some(n) = self.backward_application(left, right) { results.push(n) }
         } else if lk == CatKind::Forward
             && (rk == CatKind::Atom || rk == CatKind::Conj)
         {
-            results.push(self.forward_application(left, right));
+            if let Some(n) = self.forward_application(left, right) { results.push(n) }
         } else if lk == CatKind::Forward && rk == CatKind::Forward {
             let mut res = self.forward_application(left, right);
             if res.is_none() {
                 res = self.forward_composition(left, right);
             }
-            results.push(res);
+            if let Some(n) = res { results.push(n) }
         } else if lk == CatKind::Forward && rk == CatKind::Backward {
             let mut res = self.backward_application(left, right);
             if res.is_none() {
@@ -97,16 +97,16 @@ impl Rules {
                     res = self.backward_cross_composition(left, right);
                 }
             }
-            results.push(res);
+            if let Some(n) = res { results.push(n) }
         } else if lk == CatKind::Backward && rk == CatKind::Backward {
             let mut res = self.backward_application(left, right);
             if res.is_none() {
                 res = self.backward_composition(left, right);
             }
-            results.push(res);
+            if let Some(n) = res { results.push(n) }
         } else if lk == CatKind::Conj && rk == CatKind::Atom {
-            results.push(self.coordination(left, right));
-            results.push(self.adjectival_conj(left, right));
+            if let Some(n) = self.coordination(left, right) { results.push(n) }
+            if let Some(n) = self.adjectival_conj(left, right) { results.push(n) }
         } else if lk == CatKind::Conj
             && (rk == CatKind::Backward || rk == CatKind::Forward)
         {
@@ -114,14 +114,14 @@ impl Rules {
             if res.is_none() {
                 res = self.coordination(left, right);
             }
-            results.push(res);
+            if let Some(n) = res { results.push(n) }
         } else if lk == CatKind::Punct && rk.is_standard() {
-            results.extend(self.left_punct(left, right).into_iter().map(Some));
+            results.extend(self.left_punct(left, right));
         } else if lk.is_standard() && rk == CatKind::Punct {
-            results.extend(self.right_punct(left, right).into_iter().map(Some));
+            results.extend(self.right_punct(left, right));
         }
 
-        results.into_iter().flatten().collect()
+        results
     }
 
     // -- punctuation (rules.py:202-246), type-changing arms omitted (Task 3) --
