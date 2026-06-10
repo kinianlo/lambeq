@@ -51,3 +51,16 @@ def test_category_eq_and_matches(all_category_strings):
         pa, pb = Category.parse(a), Category.parse(b)
         assert bobcat_rs.debug_cat_eq(a, b) == (pa == pb), (a, b)
         assert bobcat_rs.debug_cat_matches(a, b) == pa.matches(pb), (a, b)
+
+
+def test_category_roundtrip(all_category_strings):
+    for s in all_category_strings:
+        _, rs_repr = bobcat_rs.debug_parse_category(s, '+')
+        rt_str, rt_repr = bobcat_rs.debug_parse_category(rs_repr, '+')
+        assert rt_repr == rs_repr, s
+
+
+def test_category_vars_bitset(all_category_strings):
+    for s in all_category_strings:
+        py_vars = sorted(Category.parse(s).vars)
+        assert bobcat_rs.debug_cat_vars(s) == py_vars, s

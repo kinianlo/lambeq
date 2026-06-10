@@ -22,6 +22,20 @@ fn debug_cat_eq(a: &str, b: &str) -> PyResult<bool> {
     Ok(ca.equals(&cb))
 }
 
+/// Parse category (tr_var='+'), return sorted list of variable ids in the vars bitset.
+#[pyfunction]
+fn debug_cat_vars(s: &str) -> PyResult<Vec<u8>> {
+    let cat = category::parse(s, '+');
+    let vars = cat.vars;
+    let mut result = Vec::new();
+    for i in 0u8..32 {
+        if vars & (1u32 << i) != 0 {
+            result.push(i);
+        }
+    }
+    Ok(result)
+}
+
 /// Parse both strings (tr_var='+'), compare with matches (a.matches(b)).
 #[pyfunction]
 fn debug_cat_matches(a: &str, b: &str) -> PyResult<bool> {
@@ -36,5 +50,6 @@ fn bobcat_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_parse_category, m)?)?;
     m.add_function(wrap_pyfunction!(debug_cat_eq, m)?)?;
     m.add_function(wrap_pyfunction!(debug_cat_matches, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_cat_vars, m)?)?;
     Ok(())
 }

@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Shared pointer to an immutable Category. Kept as an alias so the
+/// switch to `Arc` (for rayon batch parsing) is a one-line change.
+pub type CatRef = std::rc::Rc<Category>;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -55,12 +59,12 @@ pub struct Category {
     pub has_relation: bool,
     /// 0 = atomic; b'/' or b'\\' = complex
     pub dir: u8,
-    pub result: Option<Rc<Category>>,
-    pub argument: Option<Rc<Category>>,
+    pub result: Option<CatRef>,
+    pub argument: Option<CatRef>,
     pub type_raising_dep_var: u8,
     pub hash: u64,
     /// Bitset of variable indices that appear in this subtree (var 0 excluded)
-    pub vars: u16,
+    pub vars: u32,
 }
 
 impl Category {
@@ -73,10 +77,15 @@ impl Category {
         feature: u8,
         var: u8,
         has_relation: bool,
-    ) -> Rc<Self> {
+    ) -> CatRef {
         let effective_feature = if feature == FEATURE_X { FEATURE_NONE } else { feature };
         let hash = hash2(atom as u64, effective_feature as u64);
-        let vars = if var != 0 { 1u16 << var } else { 0 };
+        let vars = if var != 0 {
+            debug_assert!(var < 32, "variable id out of bitset range");
+            1u32 << var
+        } else {
+            0
+        };
         Rc::new(Category {
             atom,
             feature,
@@ -92,15 +101,20 @@ impl Category {
     }
 
     pub fn slash(
-        result: Rc<Category>,
+        result: CatRef,
         dir: u8,
-        argument: Rc<Category>,
+        argument: CatRef,
         var: u8,
         has_relation: bool,
         type_raising_dep_var: u8,
-    ) -> Rc<Self> {
+    ) -> CatRef {
         let hash = hash3(result.hash, argument.hash, dir as u64);
-        let mut vars = if var != 0 { 1u16 << var } else { 0 };
+        let mut vars = if var != 0 {
+            debug_assert!(var < 32, "variable id out of bitset range");
+            1u32 << var
+        } else {
+            0
+        };
         vars |= result.vars | argument.vars;
         Rc::new(Category {
             atom: 0,
@@ -282,7 +296,7 @@ impl<'a> Parser<'a> {
         pos: usize,
         slots: u32,
         in_result: bool,
-    ) -> (Rc<Category>, usize, u32) {
+    ) -> (CatRef, usize, u32) {
         if self.bytes[pos] == b'(' {
             self.parse_complex(type_raising_dep_var, pos, slots, in_result)
         } else {
@@ -296,7 +310,7 @@ impl<'a> Parser<'a> {
         pos: usize,
         slots: u32,
         in_result: bool,
-    ) -> (Rc<Category>, usize, u32) {
+    ) -> (CatRef, usize, u32) {
         // Opening '('
         let pos = pos + 1;
 
@@ -318,7 +332,7 @@ impl<'a> Parser<'a> {
         (cat, pos, slots)
     }
 
-    fn parse_atomic(&self, pos: usize, slots: u32) -> (Rc<Category>, usize, u32) {
+    fn parse_atomic(&self, pos: usize, slots: u32) -> (CatRef, usize, u32) {
         // Match atom: [A-Z]+ | conj | [,.;:]
         let atom_end = if self.bytes[pos] == b',' || self.bytes[pos] == b'.'
             || self.bytes[pos] == b';' || self.bytes[pos] == b':'
@@ -392,11 +406,12 @@ impl<'a> Parser<'a> {
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static CACHE: std::cell::RefCell<HashMap<(String, u8), Rc<Category>>> =
+    static CACHE: std::cell::RefCell<HashMap<(String, u8), CatRef>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
-pub fn parse(string: &str, type_raising_dep_var_char: char) -> Rc<Category> {
+pub fn parse(string: &str, type_raising_dep_var_char: char) -> CatRef {
+    debug_assert_eq!(ATOM_STRINGS[ATOM_S as usize], "S");
     let tr_var = var_id(type_raising_dep_var_char)
         .unwrap_or_else(|| panic!("unknown tr_var char: {type_raising_dep_var_char}"));
 
@@ -412,7 +427,7 @@ pub fn parse(string: &str, type_raising_dep_var_char: char) -> Rc<Category> {
     cat
 }
 
-fn parse_uncached(string: &str, tr_var: u8) -> Rc<Category> {
+fn parse_uncached(string: &str, tr_var: u8) -> CatRef {
     let p = Parser::new(string);
     let (cat, pos, _) = p.parse_cat(tr_var, 0, 0, true);
     if pos == string.len() {
