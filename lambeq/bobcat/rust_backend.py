@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from lambeq.bobcat.lexicon import Category
 from lambeq.bobcat.tree import IndexedWord, ParseTree, Rule, Variable
 
@@ -43,3 +45,72 @@ def nodes_to_tree(nodes: list[tuple[str, str, str | None, int, int]]
                                trees[right] if right >= 0 else None,
                                [], [], var_map))
     return trees[-1]
+
+
+class RustBackend:
+    """Drop-in for ChartParser backed by bobcat_rs.
+
+    Satisfies the pieces of the ChartParser interface that
+    BobcatParser uses: __call__ (single sentence), parse_batch,
+    set_root_cats.
+    """
+
+    def __init__(self,
+                 grammar,
+                 cats: list[str],
+                 root_cats: Iterable[str] | None,
+                 eisner_normal_form: bool,
+                 max_parse_trees: int,
+                 beam_size: int,
+                 input_tag_score_weight: float,
+                 missing_cat_score: float,
+                 missing_span_score: float) -> None:
+        import bobcat_rs
+        self._parser = bobcat_rs.RustChartParser(
+            grammar.categories,
+            [tuple(r) for r in grammar.binary_rules],
+            [tuple(r) for r in grammar.type_changing_rules],
+            [tuple(r) for r in grammar.type_raising_rules],
+            list(cats),
+            list(root_cats) if root_cats is not None else None,
+            eisner_normal_form,
+            max_parse_trees,
+            beam_size,
+            input_tag_score_weight,
+            missing_cat_score,
+            missing_span_score)
+
+    def set_root_cats(self, root_cats: Iterable[str] | None = None) -> None:
+        self._parser.set_root_cats(
+            list(root_cats) if root_cats is not None else None)
+
+    @staticmethod
+    def _to_input(sentence):
+        supertags = [[(st.category, st.probability) for st in sts]
+                     for sts in sentence.input_supertags]
+        return (sentence.words, supertags, sentence.span_scores)
+
+    def parse_batch(self, sentences, num_threads: int = 0):
+        """Parse Sentence objects; returns a list of ParseTree | None."""
+        results = self._parser.parse_batch(
+            [self._to_input(s) for s in sentences], num_threads)
+        return [nodes_to_tree(nodes) if nodes is not None else None
+                for nodes in results]
+
+    def __call__(self, sentence):
+        return _SingleResult(self.parse_batch([sentence])[0])
+
+
+class _SingleResult:
+    """Minimal stand-in for ParseResult: indexable, falsy when empty."""
+
+    def __init__(self, tree: ParseTree | None) -> None:
+        self._tree = tree
+
+    def __bool__(self) -> bool:
+        return self._tree is not None
+
+    def __getitem__(self, index: int):
+        if self._tree is None or index != 0:
+            raise IndexError(index)
+        return self._tree

@@ -37,6 +37,7 @@ from transformers import AutoTokenizer
 from lambeq.bobcat import (BertForChartClassification, Category,
                            ChartParser, Grammar, ParseTree,
                            Sentence, Supertag, Tagger)
+from lambeq.bobcat.rust_backend import RustBackend
 from lambeq.bobcat.tagger import TaggerOutputSentence
 from lambeq.core.globals import VerbosityLevel
 from lambeq.core.utils import SentenceBatchType
@@ -95,6 +96,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  cache_dir: StrPathT | None = None,
                  force_download: bool = False,
                  verbose: str = VerbosityLevel.PROGRESS.value,
+                 parser_backend: str = 'auto',
                  **kwargs: Any) -> None:
         """Instantiate a BobcatParser.
 
@@ -125,6 +127,12 @@ class BobcatParser(ModelBasedReader, CCGParser):
             available locally.
         verbose : str, default: 'progress',
             See :py:class:`VerbosityLevel` for options.
+        parser_backend : {'auto', 'rust', 'python'}, default: 'auto'
+            Which chart-parser implementation to use. 'auto' uses the
+            bobcat_rs Rust extension when importable and falls back to
+            the pure-Python parser; 'rust' requires the extension;
+            'python' forces the pure-Python parser. The environment
+            variable LAMBEQ_BOBCAT_BACKEND overrides 'auto'.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -196,14 +204,19 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         # Initialise model
         self._initialise_model(root_cats=root_cats,
+                               parser_backend=parser_backend,
                                **kwargs)
 
     def _initialise_model(self,
                           root_cats: Iterable[str] | None = None,
+                          parser_backend: str = 'auto',
                           **kwargs) -> None:
         """Initialise the model and load it into the appropriate device.
 
         Also handle required miscellaneous initialisation steps here."""
+
+        if parser_backend not in ('auto', 'rust', 'python'):
+            raise ValueError(f'Invalid `parser_backend`: {parser_backend!r}')
 
         with open(self.model_dir / 'pipeline_config.json') as f:
             config = json.load(f)
@@ -231,11 +244,33 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         self.tagger = Tagger(model, tokenizer, **config['tagger'])
 
+        if parser_backend == 'auto':
+            parser_backend = os.environ.get('LAMBEQ_BOBCAT_BACKEND', 'auto')
+            if parser_backend not in ('rust', 'python'):
+                try:
+                    import bobcat_rs  # noqa: F401
+                    parser_backend = 'rust'
+                except ImportError:
+                    parser_backend = 'python'
+        self.parser_backend = parser_backend
+
         grammar = Grammar.load(self.model_dir / 'grammar.json')
-        self.parser = ChartParser(grammar,
-                                  self.tagger.model.config.cats,
-                                  root_cats,
-                                  **config['parser'])
+        if parser_backend == 'rust':
+            try:
+                self.parser = RustBackend(grammar,
+                                         self.tagger.model.config.cats,
+                                         root_cats,
+                                         **config['parser'])
+            except ImportError as e:
+                raise ImportError(
+                    "parser_backend='rust' requires the bobcat_rs "
+                    'extension; build it with `pip install ./rust` '
+                    '(needs a Rust toolchain, see rustup.rs)') from e
+        else:
+            self.parser = ChartParser(grammar,
+                                      self.tagger.model.config.cats,
+                                      root_cats,
+                                      **config['parser'])
 
     @staticmethod
     def _prepare_sentence(sent: TaggerOutputSentence,
@@ -310,7 +345,30 @@ class BobcatParser(ModelBasedReader, CCGParser):
             tags = tag_results.tags
             if verbose == VerbosityLevel.TEXT.value:
                 print('Parsing tagged sentences.', file=sys.stderr)
-            if n_jobs == 1:
+            if getattr(self, 'parser_backend', 'python') == 'rust' \
+                    and isinstance(self.parser, RustBackend):
+                if n_jobs != 1:
+                    import warnings
+                    warnings.warn('`n_jobs` is ignored with the Rust '
+                                  'parser backend; it parallelises '
+                                  'internally', stacklevel=2)
+                sentence_inputs = [self._prepare_sentence(sent, tags)
+                                   for sent in tag_results.sentences]
+                try:
+                    parse_trees = self.parser.parse_batch(sentence_inputs)
+                except Exception as e:
+                    # a Rust panic surfaces here; per-sentence failures
+                    # come back as None, so this is a whole-batch bug
+                    raise BobcatParseError(
+                        ' '.join(tag_results.sentences[0].words)) from e
+                for sent, tree in zip(tag_results.sentences, parse_trees):
+                    if tree is not None:
+                        trees.append(self._build_ccgtree(tree))
+                    elif suppress_exceptions:
+                        trees.append(None)
+                    else:
+                        raise BobcatParseError(' '.join(sent.words))
+            elif n_jobs == 1:
                 for sent in tqdm(
                         tag_results.sentences,
                         desc='Parsing tagged sentences',

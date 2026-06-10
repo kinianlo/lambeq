@@ -344,3 +344,29 @@ def test_reduced_precision_tagging(bobcat_parser, sentence):
         assert autocast_spy.call_args.kwargs['dtype'] is torch.bfloat16
     finally:
         tagger.dtype = None
+
+
+def test_invalid_parser_backend():
+    with pytest.raises(ValueError):
+        BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                     parser_backend='cobol')
+
+
+def test_rust_backend_matches_python(bobcat_parser):
+    pytest.importorskip('bobcat_rs')
+    from lambeq.bobcat.rust_backend import RustBackend
+    rust_parser = BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                               parser_backend='rust')
+    assert isinstance(rust_parser.parser, RustBackend)
+    sentences = ['Alice likes Bob', 'What Alice is and is not .']
+    assert (rust_parser.sentences2trees(
+                sentences, verbose=VerbosityLevel.SUPPRESS.value)
+            == bobcat_parser.sentences2trees(
+                sentences, verbose=VerbosityLevel.SUPPRESS.value))
+    # root-cat switching must work on the Rust backend too
+    rust_parser.parser.set_root_cats(['NP'])
+    try:
+        tree = rust_parser.sentence2tree('I do')
+        assert tree.biclosed_type == CCGType.NOUN_PHRASE
+    finally:
+        rust_parser.parser.set_root_cats(None)
