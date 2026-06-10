@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
+use rayon::prelude::*;
 
 mod category;
 mod chart;
@@ -166,15 +167,32 @@ impl RustRules {
     }
 }
 
-/// The serial Rust CKY chart parser.
+/// The Rust CKY chart parser.
 ///
-/// `unsendable` because parse trees use `Rc`/`Cell` and a thread-local
-/// category parse cache; a single sentence is parsed entirely within one
-/// thread. Cross-sentence parallelism (Task 6) keeps each `parse_one`
-/// confined to its own rayon task.
-#[pyclass(unsendable)]
+/// The shared parser state (`Grammar`/`Rules`/`ChartParser`) holds only
+/// `Arc<Category>`, hash maps, vectors and primitives, so it is `Send + Sync`
+/// and can be read concurrently by rayon workers. The per-sentence parse
+/// trees use `Rc`/`Cell`, but each `parse_one` builds and consumes its chart
+/// entirely within a single rayon task — no `Rc<Node>` ever crosses a thread
+/// boundary (only owned `SerNode` primitives escape).
+#[pyclass]
 struct RustChartParser {
     parser: ChartParser,
+}
+
+// Compile-time guarantee that the shared parser state is `Send + Sync`; this
+// is what makes the `par_iter` / `allow_threads` boundary in `parse_batch`
+// sound. If a future change reintroduces an `Rc`/`Cell` field into the shared
+// tables, this will fail to compile.
+#[cfg(test)]
+mod sync_checks {
+    use super::*;
+    fn assert_send_sync<T: Send + Sync>() {}
+    #[test]
+    fn chart_parser_is_send_sync() {
+        assert_send_sync::<ChartParser>();
+        assert_send_sync::<RustChartParser>();
+    }
 }
 
 #[pymethods]
@@ -225,27 +243,43 @@ impl RustChartParser {
         Ok(())
     }
 
-    /// Parse a batch of sentences serially.
+    /// Parse a batch of sentences, optionally across rayon worker threads.
     ///
     /// `sentences`: `[(words, [[(plain_cat, logp)]], {(i, j): {cat_id: score}})]`.
     /// Each result is `None` (parse failure) or the post-order node list.
-    /// `num_threads` is accepted (the Python wrapper passes it) but IGNORED
-    /// until Task 6; this path is strictly serial.
+    ///
+    /// `num_threads`: `1` → strictly serial (no rayon pool); `0` → rayon
+    /// default (all cores); `n > 1` → a pool of `n` workers. The GIL is
+    /// released for the whole parsing phase; results are converted back to
+    /// Python objects only after the GIL is re-acquired.
     #[pyo3(signature = (sentences, num_threads = 0))]
     fn parse_batch(
         &self,
+        py: Python<'_>,
         sentences: Vec<SentenceInput>,
         num_threads: usize,
     ) -> PyResult<Vec<Option<Vec<SerNode>>>> {
-        let _ = num_threads;
-        Ok(sentences
-            .iter()
-            .map(|(words, supertags, span_scores)| {
-                self.parser
-                    .parse_one(words, supertags, span_scores)
-                    .map(|tree| serialize_tree(&tree))
-            })
-            .collect())
+        let parse_one = |(words, supertags, span_scores): &SentenceInput| {
+            self.parser
+                .parse_one(words, supertags, span_scores)
+                .map(|tree| serialize_tree(&tree))
+        };
+
+        py.allow_threads(|| {
+            if num_threads == 1 {
+                Ok(sentences.iter().map(parse_one).collect())
+            } else {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(num_threads) // 0 = rayon default (all cores)
+                    .build()
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "failed to build rayon thread pool: {e}"
+                        ))
+                    })?;
+                Ok(pool.install(|| sentences.par_iter().map(parse_one).collect()))
+            }
+        })
     }
 }
 

@@ -237,3 +237,11 @@ def test_serial_parse_equivalence(bobcat_parser, rs_parser):
         assert nodes is not None, ' '.join(sent.words)
         rs_ccg = BobcatParser._build_ccgtree(nodes_to_tree(nodes))
         assert rs_ccg == py_ccg, ' '.join(sent.words)
+
+
+def test_parse_batch_parallel_matches_serial(bobcat_parser, rs_parser):
+    out = _tagged(bobcat_parser, SENTENCES * 8)
+    inputs = _rust_inputs(bobcat_parser, out)
+    serial = rs_parser.parse_batch(inputs, 1)
+    parallel = rs_parser.parse_batch(inputs, 0)   # 0 = all cores
+    assert serial == parallel

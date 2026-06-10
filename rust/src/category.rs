@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::rc::Rc;
 
-/// Shared pointer to an immutable Category. Kept as an alias so the
-/// switch to `Arc` (for rayon batch parsing) is a one-line change.
-pub type CatRef = std::rc::Rc<Category>;
+/// Shared pointer to an immutable Category. `Arc` (not `Rc`) so the shared
+/// grammar/parser tables are `Send + Sync` and can be read concurrently by
+/// rayon workers during batch parsing (Task 6).
+pub type CatRef = std::sync::Arc<Category>;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -97,7 +97,7 @@ impl Category {
         } else {
             0
         };
-        Rc::new(Category {
+        CatRef::new(Category {
             atom,
             feature,
             var,
@@ -127,7 +127,7 @@ impl Category {
             0
         };
         vars |= result.vars | argument.vars;
-        Rc::new(Category {
+        CatRef::new(Category {
             atom: 0,
             feature: 0,
             var,
