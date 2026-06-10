@@ -22,7 +22,17 @@ pub const VARIABLES: &str = "+_YZWVUTRQAB";
 
 pub const FEATURE_NONE: u8 = 0;
 pub const FEATURE_X: u8 = 1;
-const ATOM_S: u8 = 3;
+
+pub const ATOM_N: u8 = 1;
+pub const ATOM_NP: u8 = 2;
+pub const ATOM_S: u8 = 3;
+pub const ATOM_CONJ: u8 = 5;
+pub const ATOM_COMMA: u8 = 6;
+pub const ATOM_SEMICOLON: u8 = 7;
+
+/// Type alias for a variable translation map (old var id -> new var id).
+/// `None` means the var is absent from the map (Python would KeyError).
+pub type VarTrans = [Option<u8>; 32];
 
 // ---------------------------------------------------------------------------
 // Hash helper (splitmix64-based, deterministic)
@@ -61,6 +71,7 @@ pub struct Category {
     pub dir: u8,
     pub result: Option<CatRef>,
     pub argument: Option<CatRef>,
+    #[allow(dead_code)] // read by type-raising in Task 3
     pub type_raising_dep_var: u8,
     pub hash: u64,
     /// Bitset of variable indices that appear in this subtree (var 0 excluded)
@@ -133,6 +144,74 @@ impl Category {
     #[inline]
     pub fn is_atomic(&self) -> bool {
         self.dir == 0
+    }
+
+    /// Whether this is a backward complex category (`X\Y`).
+    #[inline]
+    pub fn bwd(&self) -> bool {
+        self.dir == b'\\'
+    }
+
+    /// Whether this is a forward complex category (`X/Y`).
+    #[inline]
+    pub fn fwd(&self) -> bool {
+        self.dir == b'/'
+    }
+
+    /// Whether the atom is a punctuation atom (`atom >= Atom.COMMA`).
+    #[inline]
+    pub fn atom_is_punct(&self) -> bool {
+        self.atom >= ATOM_COMMA
+    }
+
+    #[inline]
+    pub fn result_ref(&self) -> Option<&CatRef> {
+        self.result.as_ref()
+    }
+
+    #[inline]
+    pub fn argument_ref(&self) -> Option<&CatRef> {
+        self.argument.as_ref()
+    }
+
+    // -----------------------------------------------------------------------
+    // Translate (lexicon.py:124-148)
+    // -----------------------------------------------------------------------
+
+    /// Relabel variables via `var_map` and resolve the `X` feature to
+    /// `feature` (when it is not NONE). Returns a fresh category.
+    ///
+    /// Mirrors `Category.translate`. Every non-zero var encountered is
+    /// guaranteed present in `var_map` (Python would raise `KeyError`
+    /// otherwise); var 0 maps to 0.
+    pub fn translate(&self, var_map: &VarTrans, feature: u8) -> CatRef {
+        let new_var = if self.var == 0 {
+            0
+        } else {
+            var_map[self.var as usize]
+                .expect("translate: variable missing from var_map")
+        };
+
+        if self.is_atomic() {
+            let new_feature = if self.feature == FEATURE_X && feature != FEATURE_NONE {
+                feature
+            } else {
+                self.feature
+            };
+            Category::new_atomic(self.atom, new_feature, new_var, self.has_relation)
+        } else {
+            let result = self
+                .result
+                .as_ref()
+                .unwrap()
+                .translate(var_map, feature);
+            let argument = self
+                .argument
+                .as_ref()
+                .unwrap()
+                .translate(var_map, feature);
+            Category::slash(result, self.dir, argument, new_var, self.has_relation, 0)
+        }
     }
 
     // -----------------------------------------------------------------------
