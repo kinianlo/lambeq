@@ -303,6 +303,11 @@ def test_reduced_precision_tagging(bobcat_parser, sentence):
     assert tagger.dtype is None
     tagger.dtype = 'bfloat16'
     try:
-        assert bobcat_parser.sentence2tree(sentence) is not None
+        with patch('lambeq.bobcat.tagger.torch.autocast',
+                   wraps=torch.autocast) as autocast_spy:
+            tree = bobcat_parser.sentence2tree(sentence)
+        assert tree is not None
+        autocast_spy.assert_called_once()
+        assert autocast_spy.call_args.kwargs['dtype'] is torch.bfloat16
     finally:
         tagger.dtype = None
