@@ -124,6 +124,10 @@ class BobcatParser(ModelBasedReader, CCGParser):
             If "relative", the probablity threshold is relative to the
             highest scoring entry. Otherwise, the probability is an
             absolute threshold.
+        max_spans_per_batch : int, optional
+            If set, overrides `batch_size`: each batch contains as many
+            sentences as fit in this padded span count, keeping memory
+            usage flat regardless of sentence length.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
@@ -172,6 +176,11 @@ class BobcatParser(ModelBasedReader, CCGParser):
                     subconfig[key] = kwargs.pop(key)
                 except KeyError:
                     pass
+
+        # parameters that postdate the shipped pipeline_config.json
+        for key in ('max_spans_per_batch',):
+            if key in kwargs:
+                config['tagger'][key] = kwargs.pop(key)
 
         if kwargs:
             raise TypeError('BobcatParser got unexpected keyword argument(s): '

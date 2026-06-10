@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from lambeq import BobcatParseError, BobcatParser, CCGType, VerbosityLevel
 from lambeq.backend.grammar import Cup, Diagram, Ty, Word
+from lambeq.bobcat.tagger import Tagger, chart_size
 
 
 @pytest.fixture(scope='module')
@@ -251,3 +252,26 @@ def test_tagger_restores_input_order(bobcat_parser):
 def test_tagger_invalid_batch_size_override(bobcat_parser):
     with pytest.raises(ValueError):
         bobcat_parser.tagger([['a']], batch_size=-1)
+
+
+def test_make_batches_respects_span_budget(bobcat_parser):
+    tagger = bobcat_parser.tagger
+    tagger.max_spans_per_batch = 20
+    try:
+        sentences = [['a'] * n for n in (1, 2, 3, 4, 5)]
+        batches = tagger.make_batches(sentences, batch_size=1000)
+        # every sentence appears exactly once
+        assert sorted(i for batch in batches for i in batch) == [0, 1, 2, 3, 4]
+        for batch in batches:
+            max_len = max(len(sentences[i]) for i in batch)
+            padded_spans = len(batch) * chart_size(max_len)
+            assert len(batch) == 1 or padded_spans <= 20
+    finally:
+        tagger.max_spans_per_batch = None
+
+
+def test_invalid_max_spans_per_batch(bobcat_parser):
+    with pytest.raises(ValueError):
+        Tagger(bobcat_parser.tagger.model,
+               bobcat_parser.tagger.tokenizer,
+               max_spans_per_batch=0)

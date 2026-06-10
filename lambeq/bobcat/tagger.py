@@ -283,7 +283,8 @@ class Tagger:
                  tag_prob_threshold_strategy: str = 'relative',
                  span_top_k: int = 1,
                  span_prob_threshold: float = 1,
-                 span_prob_threshold_strategy: str = 'relative') -> None:
+                 span_prob_threshold_strategy: str = 'relative',
+                 max_spans_per_batch: int | None = None) -> None:
         strategies = ('absolute', 'relative')
 
         if not (batch_size >= 1 and batch_size == int(batch_size)):
@@ -306,6 +307,12 @@ class Tagger:
             raise ValueError('Invalid `span_prob_threshold_strategy`: '
                              f'{span_prob_threshold_strategy}')
 
+        if max_spans_per_batch is not None and not (
+                max_spans_per_batch >= 1
+                and max_spans_per_batch == int(max_spans_per_batch)):
+            raise ValueError('Invalid `max_spans_per_batch`: '
+                             f'{max_spans_per_batch}')
+
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size = int(batch_size)
@@ -315,6 +322,8 @@ class Tagger:
         self.span_top_k = int(span_top_k)
         self.span_prob_threshold = span_prob_threshold
         self.span_prob_threshold_strategy = span_prob_threshold_strategy
+        self.max_spans_per_batch = (None if max_spans_per_batch is None
+                                    else int(max_spans_per_batch))
 
     def prepare_inputs(self,
                        inputs: Sequence[Sequence[str]],
@@ -402,10 +411,30 @@ class Tagger:
         compute on padding, which is especially costly for the span
         classifier whose size grows quadratically with sentence length.
 
+        If `max_spans_per_batch` is set, it overrides `batch_size`:
+        each batch takes as many sentences as fit within that padded
+        span count, so memory use stays flat across batches. A sentence
+        that exceeds the budget on its own forms a singleton batch.
+
         """
         order = sorted(range(len(inputs)), key=lambda i: len(inputs[i]))
-        return [order[i:i + batch_size]
-                for i in range(0, len(order), batch_size)]
+        if self.max_spans_per_batch is None:
+            return [order[i:i + batch_size]
+                    for i in range(0, len(order), batch_size)]
+
+        batches: list[list[int]] = []
+        batch: list[int] = []
+        for i in order:
+            # `order` is sorted, so sentence `i` is the longest in the
+            # batch and determines its padded length
+            padded_spans = (len(batch) + 1) * chart_size(len(inputs[i]))
+            if batch and padded_spans > self.max_spans_per_batch:
+                batches.append(batch)
+                batch = []
+            batch.append(i)
+        if batch:
+            batches.append(batch)
+        return batches
 
     def __call__(self,
                  inputs: Sequence[Sequence[str]],

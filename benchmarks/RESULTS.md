@@ -51,3 +51,25 @@ chart parsing:    0.19s (1071.2 sent/s)
 end-to-end:       3.72s (53.8 sent/s)
 peak RSS:         2620 MB
 ```
+
+## After span-budget batching (Task 4)
+
+```
+command:          /tmp/bobcat_bench.txt --num 200 --max-spans-per-batch 5000
+config:           {'max_spans_per_batch': 5000} device=cpu
+sentences:        200 (0 failed)
+tagging:          3.94s (50.8 sent/s)
+chart parsing:    0.20s (1005.0 sent/s)
+end-to-end:       4.14s (48.3 sent/s)
+peak RSS:         2642 MB
+```
+
+```
+command:          /tmp/bobcat_bench.txt --num 200 --max-spans-per-batch 20000
+config:           {'max_spans_per_batch': 20000} device=cpu
+sentences:        200 (0 failed)
+tagging:          4.96s (40.3 sent/s)
+chart parsing:    0.21s (938.8 sent/s)
+end-to-end:       5.18s (38.6 sent/s)
+peak RSS:         2840 MB
+```
