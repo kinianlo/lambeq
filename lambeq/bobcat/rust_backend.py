@@ -105,7 +105,7 @@ class RustBackend:
                 for nodes in results]
 
     def __call__(self, sentence: Sentence) -> _SingleResult:
-        return _SingleResult(self.parse_batch([sentence])[0])
+        return _SingleResult(self.parse_batch([sentence], num_threads=1)[0])
 
 
 class _SingleResult:
