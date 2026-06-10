@@ -413,8 +413,9 @@ class Tagger:
 
         If `max_spans_per_batch` is set, it overrides `batch_size`:
         each batch takes as many sentences as fit within that padded
-        span count, so memory use stays flat across batches. A sentence
-        that exceeds the budget on its own forms a singleton batch.
+        span count, capping the memory used per batch. A sentence that
+        exceeds the budget on its own forms a singleton batch, which
+        may exceed the cap.
 
         """
         order = sorted(range(len(inputs)), key=lambda i: len(inputs[i]))

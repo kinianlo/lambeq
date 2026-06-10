@@ -126,8 +126,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
             absolute threshold.
         max_spans_per_batch : int, optional
             If set, overrides `batch_size`: each batch contains as many
-            sentences as fit in this padded span count, keeping memory
-            usage flat regardless of sentence length.
+            sentences as fit in this padded span count, capping memory
+            usage per batch. A single sentence exceeding the budget on
+            its own still forms its own batch.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
