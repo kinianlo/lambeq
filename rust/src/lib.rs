@@ -73,12 +73,11 @@ impl RustRules {
     fn new(
         categories: HashMap<String, String>,
         binary_rules: Vec<(String, String)>,
-        _type_changing_rules: Vec<(u32, String, Option<String>, String, bool)>,
-        _type_raising_rules: Vec<(String, String, String)>,
+        type_changing_rules: Vec<(u32, String, Option<String>, String, bool)>,
+        type_raising_rules: Vec<(String, String, String)>,
         eisner_normal_form: bool,
     ) -> PyResult<Self> {
-        // type_changing / type_raising tables are accepted but UNUSED (Task 3).
-        let grammar = Grammar::new(categories, &binary_rules);
+        let grammar = Grammar::new(categories, &binary_rules, &type_changing_rules, &type_raising_rules);
         let rules = Rules::new(eisner_normal_form, grammar);
         Ok(RustRules { rules })
     }
@@ -102,6 +101,57 @@ impl RustRules {
         Ok(trees
             .into_iter()
             .map(|t| (t.rule.name().to_string(), t.cat.to_plain_str()))
+            .collect())
+    }
+
+    /// Like debug_combine but returns (rule_name, FULL REPR of result cat).
+    fn debug_combine_repr(&self, left: &str, right: &str) -> Result<Vec<(String, String)>, pyo3::PyErr> {
+        let cat_l = match self.rules.grammar.categories.get(left) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {left}"))),
+        };
+        let cat_r = match self.rules.grammar.categories.get(right) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {right}"))),
+        };
+
+        let lt = lexical(cat_l, "l".to_string(), 1);
+        let rt = lexical(cat_r, "r".to_string(), 2);
+
+        let trees = self.rules.combine(&lt, &rt);
+        Ok(trees
+            .into_iter()
+            .map(|t| (t.rule.name().to_string(), t.cat.to_repr_str()))
+            .collect())
+    }
+
+    /// Apply unary type-changing rules (Rule::U) to a category.
+    /// Returns (rule_name, repr) pairs.
+    fn debug_type_change(&self, cat_str: &str) -> Result<Vec<(String, String)>, pyo3::PyErr> {
+        let cat = match self.rules.grammar.categories.get(cat_str) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {cat_str}"))),
+        };
+        let node = lexical(cat, "w".to_string(), 1);
+        let results = self.rules.type_change_node(&node);
+        Ok(results
+            .into_iter()
+            .map(|n| (n.rule.name().to_string(), n.cat.to_repr_str()))
+            .collect())
+    }
+
+    /// Apply type-raising rules to a category.
+    /// Returns (rule_name, repr) pairs.
+    fn debug_type_raise(&self, cat_str: &str) -> Result<Vec<(String, String)>, pyo3::PyErr> {
+        let cat = match self.rules.grammar.categories.get(cat_str) {
+            Some(c) => c.clone(),
+            None => return Err(pyo3::exceptions::PyKeyError::new_err(format!("unknown category: {cat_str}"))),
+        };
+        let node = lexical(cat, "w".to_string(), 1);
+        let results = self.rules.type_raise_node(&node);
+        Ok(results
+            .into_iter()
+            .map(|n| (n.rule.name().to_string(), n.cat.to_repr_str()))
             .collect())
     }
 }

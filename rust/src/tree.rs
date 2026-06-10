@@ -164,7 +164,6 @@ pub fn coordination(cat: CatRef, left: Rc<Node>, right: Rc<Node>) -> Rc<Node> {
 }
 
 /// tree.py:321-347 (`TypeChanging`), variable logic only.
-#[allow(dead_code)] // TODO(Task 3): wired by type-changing/raising rules
 pub fn type_changing(
     rule: Rule,
     cat: CatRef,
@@ -233,7 +232,6 @@ pub fn adjectival_conj_tree(left: Rc<Node>, right: Rc<Node>) -> Rc<Node> {
 
 /// tree.py:375-388 (`TypeRaising`). var_map = {1: left.var_map[left.cat.var]}
 /// when present. Rule FTR if cat.fwd else BTR.
-#[allow(dead_code)] // TODO(Task 3): wired by type-changing/raising rules
 pub fn type_raising(cat: CatRef, left: Rc<Node>) -> Rc<Node> {
     let mut var_map = empty_var_map();
     if let Some(filled) = left.var_map[left.cat.var as usize] {

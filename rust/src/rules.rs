@@ -5,10 +5,10 @@ use std::rc::Rc;
 use crate::category::{
     self, CatRef, ATOM_COMMA, ATOM_CONJ, ATOM_N, ATOM_NP, ATOM_SEMICOLON, FEATURE_X,
 };
-use crate::grammar::Grammar;
+use crate::grammar::{Grammar, OrderedCatMap, TypeChangingRule};
 use crate::tree::{
     adjectival_conj_tree, binary_combinator, coordination, left_punct_tree,
-    right_punct_tree, Node, Rule, Unify,
+    right_punct_tree, type_changing, type_raising, Node, Rule, Unify,
 };
 
 // ---------------------------------------------------------------------------
@@ -124,7 +124,51 @@ impl Rules {
         results
     }
 
-    // -- punctuation (rules.py:202-246), type-changing arms omitted (Task 3) --
+    // -- type-raising (rules.py:171-176) --
+
+    /// Apply all type-raising rules to a single node.
+    pub fn type_raise_node(&self, node: &Rc<Node>) -> Vec<Rc<Node>> {
+        match self.grammar.type_raising_rules.match_rule_get(&node.cat) {
+            Some(cats) => cats
+                .iter()
+                .map(|cat| type_raising(cat.clone(), node.clone()))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Apply all unary type-changing rules to a single node (Rule::U).
+    pub fn type_change_node(&self, node: &Rc<Node>) -> Vec<Rc<Node>> {
+        self.type_change_cat(Rule::U, &node.cat.clone(), node, None, &self.grammar.unary_rules)
+    }
+
+    /// rules.py:178-193. Apply type-changing rules by matching `cat` against
+    /// `rules` and building TypeChanging nodes.
+    fn type_change_cat(
+        &self,
+        rule: Rule,
+        cat: &CatRef,
+        left: &Rc<Node>,
+        right: Option<&Rc<Node>>,
+        rules: &OrderedCatMap<Vec<TypeChangingRule>>,
+    ) -> Vec<Rc<Node>> {
+        match rules.match_rule_get(cat) {
+            Some(tc_rules) => tc_rules
+                .iter()
+                .map(|tc_rule| {
+                    type_changing(
+                        rule,
+                        tc_rule.category.clone(),
+                        left.clone(),
+                        right.cloned(),
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    // -- punctuation (rules.py:202-246) --
 
     fn left_punct(&self, left: &Rc<Node>, right: &Rc<Node>) -> Vec<Rc<Node>> {
         let mut results = Vec::new();
@@ -132,7 +176,7 @@ impl Rules {
             results.push(left_punct_tree(left.clone(), right.clone()));
         }
 
-        // left punct coordination
+        // left punct coordination (rules.py:207-213)
         let la = left.cat.atom;
         if (la == ATOM_COMMA || la == ATOM_SEMICOLON)
             && !right.coordinated_or_type_raised()
@@ -148,6 +192,13 @@ impl Rules {
             );
             results.push(coordination(cat, left.clone(), right.clone()));
         }
+
+        // left comma type change (rules.py:215-224)
+        // Outer lookup is EXACT (plain dict.__getitem__, KeyError -> skip).
+        if let Some(inner_map) = self.grammar.left_punct_type_changing_rules.exact_get(&left.cat) {
+            results.extend(self.type_change_cat(Rule::LP, &right.cat, left, Some(right), inner_map));
+        }
+
         results
     }
 
@@ -156,6 +207,23 @@ impl Rules {
         if !left.coordinated_or_type_raised() {
             results.push(right_punct_tree(left.clone(), right.clone()));
         }
+
+        // right comma type change (rules.py:235-245)
+        // Gated on not left.coordinated; outer lookup is EXACT.
+        if !left.coordinated() {
+            if let Some(inner_map) =
+                self.grammar.right_punct_type_changing_rules.exact_get(&right.cat)
+            {
+                results.extend(self.type_change_cat(
+                    Rule::RP,
+                    &left.cat,
+                    left,
+                    Some(right),
+                    inner_map,
+                ));
+            }
+        }
+
         results
     }
 

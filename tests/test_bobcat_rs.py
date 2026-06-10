@@ -86,6 +86,59 @@ def rs_rules_no_tc(grammar_data):
                                [], [], True)
 
 
+@pytest.fixture(scope='module')
+def py_rules_full(grammar_data):
+    from lambeq.bobcat.grammar import Grammar
+    from lambeq.bobcat.rules import Rules
+    grammar = Grammar(**grammar_data)
+    marked_up = {plain: Category.parse(marked)
+                 for plain, marked in grammar.categories.items()}
+    return Rules(True, grammar, marked_up), marked_up
+
+
+@pytest.fixture(scope='module')
+def rs_rules_full(grammar_data):
+    return bobcat_rs.RustRules(
+        grammar_data['categories'],
+        [tuple(r) for r in grammar_data['binary_rules']],
+        [tuple(r) for r in grammar_data['type_changing_rules']],
+        [tuple(r) for r in grammar_data['type_raising_rules']],
+        True)
+
+
+def test_type_change_and_raise_match_python(py_rules_full, rs_rules_full):
+    from lambeq.bobcat.tree import Lexical
+    rules, marked_up = py_rules_full
+    for cat_str, cat in marked_up.items():
+        tree = Lexical(cat, 'w', 1)
+        expected_tc = [(t.rule.name, repr(t.cat))
+                       for t in rules.type_change([tree])]
+        assert rs_rules_full.debug_type_change(cat_str) == expected_tc, cat_str
+        expected_tr = [(t.rule.name, repr(t.cat))
+                       for t in rules.type_raise([tree])]
+        assert rs_rules_full.debug_type_raise(cat_str) == expected_tr, cat_str
+
+
+def test_full_combine_repr_matches_python(grammar_data, py_rules_full,
+                                          rs_rules_full):
+    from lambeq.bobcat.tree import Lexical
+    rules, marked_up = py_rules_full
+    checked = 0
+    for left_str, right_str in grammar_data['binary_rules']:
+        left_key = str(Category.parse(left_str))
+        right_key = str(Category.parse(right_str))
+        if left_key not in marked_up or right_key not in marked_up:
+            continue
+        left = Lexical(marked_up[left_key], 'l', 1)
+        right = Lexical(marked_up[right_key], 'r', 2)
+        expected = [(t.rule.name, repr(t.cat))
+                    for t in rules.combine(left, right)]
+        got = rs_rules_full.debug_combine_repr(left_key, right_key)
+        assert got == expected, (left_str, right_str)
+        checked += 1
+    assert checked > 2000
+
+
 def test_combine_matches_python_on_all_rule_instances(
         grammar_data, py_rules_no_tc, rs_rules_no_tc):
     from lambeq.bobcat.tree import Lexical
