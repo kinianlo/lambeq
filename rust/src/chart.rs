@@ -4,8 +4,9 @@
 // load-bearing for the identical-trees guarantee; they mirror the Python
 // oracle line-for-line.
 
-use std::collections::HashMap;
 use std::rc::Rc;
+
+use rustc_hash::FxHashMap;
 
 use crate::grammar::CatKey;
 use crate::tree::Node;
@@ -19,7 +20,7 @@ const NEG_INF: f64 = f64::NEG_INFINITY;
 pub struct Cell {
     pub beam_size: usize,
     pub trees: Vec<Rc<Node>>,
-    pub trees_map: HashMap<CatKey, Rc<Node>>,
+    pub trees_map: FxHashMap<CatKey, Rc<Node>>,
     pub min_score: f64,
 }
 
@@ -28,7 +29,7 @@ impl Cell {
         Cell {
             beam_size,
             trees: Vec::new(),
-            trees_map: HashMap::new(),
+            trees_map: FxHashMap::default(),
             min_score: NEG_INF,
         }
     }
@@ -56,13 +57,22 @@ impl Cell {
     pub fn add(&mut self, mut to_add: Vec<Rc<Node>>) -> isize {
         // Stable descending sort by score — Rust's sort_by is stable, so equal
         // scores keep input order, matching Python's `sorted(key=-score)`.
-        to_add.sort_by(|a, b| b.score.get().partial_cmp(&a.score.get()).unwrap());
+        // NaN-safe: treat as equal (stable sort keeps input order), rather
+        // than panicking; NaN can only arise from pathological inputs like
+        // input_tag_score_weight = 0 with -inf log-probs
+        to_add.sort_by(|a, b| {
+            b.score
+                .get()
+                .partial_cmp(&a.score.get())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let mut added: isize = 0;
         let b = self.beam_size;
         for tree in to_add {
             let score = tree.score.get();
-            if self.trees.len() >= b
+            if b >= 1
+                && self.trees.len() >= b
                 && score < self.trees.last().unwrap().score.get()
             {
                 break;
@@ -136,7 +146,7 @@ impl Cell {
 
 pub struct Chart {
     pub beam_size: usize,
-    pub cells: HashMap<(u32, u32), Cell>,
+    pub cells: FxHashMap<(u32, u32), Cell>,
     pub parse_tree_count: isize,
 }
 
@@ -144,7 +154,7 @@ impl Chart {
     pub fn new(beam_size: usize) -> Chart {
         Chart {
             beam_size,
-            cells: HashMap::new(),
+            cells: FxHashMap::default(),
             parse_tree_count: 0,
         }
     }

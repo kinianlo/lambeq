@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rustc_hash::FxHashMap;
+
 use crate::category::{self, Category, CatRef, ATOM_NP, FEATURE_NONE};
 use crate::chart::Chart;
 use crate::grammar::{CatKey, Grammar};
@@ -28,7 +30,7 @@ pub struct ChartParser {
     input_tag_score_weight: f64,
     missing_cat_score: f64,
     missing_span_score: f64,
-    result_cats: HashMap<ResultKey, u32>,
+    result_cats: FxHashMap<ResultKey, u32>,
     root_cats: Option<Vec<CatRef>>,
 }
 
@@ -61,7 +63,7 @@ impl ChartParser {
 
         // result_cats (parser.py:345-362).
         const CONJ_TAG: &str = "[conj]";
-        let mut result_cats: HashMap<ResultKey, u32> = HashMap::new();
+        let mut result_cats: FxHashMap<ResultKey, u32> = FxHashMap::default();
         for (cat_id, cat_str) in cats.iter().enumerate() {
             let chain: Vec<&str> = cat_str.split("::").collect();
             if chain.len() == 1 && chain[0].ends_with(CONJ_TAG) {
