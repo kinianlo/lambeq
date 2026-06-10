@@ -235,3 +235,38 @@ Notes:
   `.tolist()`. Matches the code-review follow-up "slice before tolist";
   cost grows with chart size, so it only shows on long sentences.
   End-to-end still wins via n_jobs/fp16, but this is the top follow-up.
+
+## GPU results — beaker SGE cluster, NVIDIA A40 on `animal-206-2` (torch 2.6+cu124, Python 3.11)
+
+SGE job 6950991 via gpu.q. Node was busy (load ~22 with other tenants),
+so CPU-side stages (tokenisation, chart parsing) are noisier than the
+Lab 105 numbers. Stage rates are sent/s.
+
+Short corpus (400 sentences):
+
+| config                  | tagging | end-to-end | peak CUDA |
+|-------------------------|--------:|-----------:|----------:|
+| before, default (batch 4) |  185.8 |      148.5 |   1592 MB |
+| before, batch 32        |   342.0 |      230.4 |   1620 MB |
+| after, batch 32         |   361.8 |      242.1 |   1620 MB |
+| after, batch 32 + fp16  |   277.3 |      199.9 |   2371 MB |
+| after, max-spans 50000  |   233.6 |      185.3 |   2144 MB |
+
+Long corpus (187 sentences, batch 16):
+
+| config                   | end-to-end |
+|--------------------------|-----------:|
+| before                   |       16.2 |
+| after                    |       20.7 |
+| after + n_jobs=4         |       28.9 |
+| after + fp16 + n_jobs=4  |       28.6 |
+
+Notes:
+- n_jobs=4 on long sentences: 16.2 -> 28.9 sent/s end-to-end (1.8x) —
+  the chart parser is the dominant stage on GPU, as on the 3090 Ti.
+- fp16 at batch 32 does not pay on the A40 either (same pattern as the
+  3090 Ti: autocast needs large batches, e.g. batch 128, to win).
+- Operational note: jobs scheduled onto `mitchell.local` card 0 failed
+  with "CUDA-capable device(s) is/are busy or unavailable" (exclusive
+  compute mode, apparently a stale process); excluding the node with
+  `qsub -l h=!mitchell.local` resolved it.
