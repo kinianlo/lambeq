@@ -192,3 +192,46 @@ peak RSS:         3145 MB
 
 On the long corpus, chart parsing is ~22% of total time; n_jobs=-1 gives
 a 14% end-to-end speedup (21.50s → 18.48s, 8.7 → 10.1 sent/s).
+
+## GPU results — Lab 105 `goosander-l`, RTX 3090 Ti (torch 2.12+cu130, Python 3.11)
+
+"before" = `main` (183a5c1), "after" = this branch. Corpora as above
+(short: 3-12 words; long: 25-50 words). Stage rates are sent/s.
+
+Short corpus (400 sentences):
+
+| config                    | tagging | end-to-end | peak CUDA |
+|---------------------------|--------:|-----------:|----------:|
+| before, default (batch 4) |   366.4 |      297.0 |   1714 MB |
+| before, batch 32          |   870.4 |      557.3 |   2619 MB |
+| after, default            |   467.1 |      360.7 |   1591 MB |
+| after, batch 32           |   989.6 |      607.0 |   1619 MB |
+| after, batch 128          |   992.2 |      609.2 |   1720 MB |
+| after, batch 32 + fp16    |   613.7 |      441.4 |   1628 MB |
+| after, batch 128 + fp16   |  1369.0 |      724.5 |   1742 MB |
+| after, max-spans 100000   |   463.0 |      357.3 |   2143 MB |
+
+Long corpus (187 sentences, batch 16):
+
+| config                       | tagging | end-to-end | peak CUDA |
+|------------------------------|--------:|-----------:|----------:|
+| before                       |   170.5 |       50.9 |   3593 MB |
+| after                        |   105.7 |       42.1 |   1786 MB |
+| after + n_jobs=-1            |    94.1 |       63.7 |   1786 MB |
+| after + fp16 + n_jobs=-1     |   117.0 |       76.2 |   1822 MB |
+
+Notes:
+- Headline: 297 -> 724 sent/s end-to-end on short sentences (2.4x);
+  50.9 -> 76.2 sent/s on long sentences (1.5x).
+- inference_mode cuts peak CUDA memory ~38% at batch 32
+  (2619 -> 1619 MB) and halves it on the long corpus (3593 -> 1786 MB).
+- n_jobs=-1 on long sentences: 42.1 -> 63.7 sent/s; on short sentences
+  it is slightly counterproductive (631 -> 581 sent/s on the 750-sentence
+  run) due to per-sentence IPC overhead.
+- REGRESSION (long corpus only): "after" GPU tagging is consistently
+  slower than "before" (1.6-2.0s vs 1.1s across three runs). Suspected
+  cause: `extract_topk` transfers a third (mask) tensor and full padded
+  rows to Python, where the old loop sliced per-sentence before
+  `.tolist()`. Matches the code-review follow-up "slice before tolist";
+  cost grows with chart size, so it only shows on long sentences.
+  End-to-end still wins via n_jobs/fp16, but this is the top follow-up.
