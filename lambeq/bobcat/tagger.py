@@ -120,17 +120,28 @@ def extract_topk(logits: torch.Tensor,
     if skip_index_0:
         mask = mask & (indices != 0)
 
-    output_batch = []
-    for length, sent_scores, sent_indices, sent_mask in zip(
-            lengths, scores.tolist(), indices.tolist(), mask.tolist()):
-        output_batch.append(
-            [[(index, score)
-              for score, index, keep
-              in zip(pos_scores, pos_indices, pos_mask) if keep]
-             for pos_scores, pos_indices, pos_mask
-             in zip(sent_scores[:length],
-                    sent_indices[:length],
-                    sent_mask[:length])])
+    # drop padding positions on-device, then transfer only the
+    # surviving entries: materialising the full padded
+    # (batch, positions, k) tensors as Python objects costs time that
+    # grows quadratically with sentence length for the span classifier
+    positions = torch.arange(scores.shape[1], device=scores.device)
+    length_mask = (positions.unsqueeze(0)
+                   < torch.tensor(lengths, device=scores.device)
+                          .unsqueeze(1))
+    mask = mask & length_mask.unsqueeze(-1)
+
+    # row-major order means entries arrive grouped by (sentence,
+    # position), with scores in descending order within each position
+    coords = mask.nonzero().tolist()
+    kept_scores = scores[mask].tolist()
+    kept_indices = indices[mask].tolist()
+
+    output_batch: list[list[TagListT]] = [
+        [[] for _ in range(length)] for length in lengths]
+    for (sent, pos, _), index, score in zip(coords,
+                                            kept_indices,
+                                            kept_scores):
+        output_batch[sent][pos].append((index, score))
     return output_batch
 
 
