@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Benchmark BobcatParser throughput and memory.
 
-Reads a text file with one (whitespace-tokenisable) sentence per line and
-reports tagging time, chart-parsing time, sentences/sec and peak memory.
-The input is assumed to be clean: non-empty, whitespace-tokenisable lines.
+Reads a text file with one (whitespace-tokenisable) sentence per
+line and reports tagging time, chart-parsing time, sentences/sec
+and peak memory.
+The input is assumed to be clean: non-empty,
+whitespace-tokenisable lines.
 
 Example:
     python benchmarks/bobcat_throughput.py sentences.txt --device cuda
@@ -19,7 +21,7 @@ from lambeq import BobcatParser, VerbosityLevel
 
 
 def peak_rss_mb() -> float:
-    """Peak resident set size of this process and its children, in MB."""
+    """Peak resident set size of process and children, in MB."""
     self_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     children_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     return (self_kb + children_kb) / 1024

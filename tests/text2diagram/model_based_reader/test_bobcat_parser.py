@@ -272,10 +272,12 @@ def test_make_batches_respects_span_budget(bobcat_parser):
         # exact boundary: 3 sentences of length 3 give
         # 3 * chart_size(3) = 18 padded spans, fitting budget 18 exactly
         tagger.max_spans_per_batch = 18
-        assert tagger.make_batches([['a'] * 3] * 3, batch_size=1) == [[0, 1, 2]]
+        assert (tagger.make_batches([['a'] * 3] * 3, batch_size=1)
+                == [[0, 1, 2]])
         # one below the boundary forces a split
         tagger.max_spans_per_batch = 17
-        assert tagger.make_batches([['a'] * 3] * 3, batch_size=1) == [[0, 1], [2]]
+        assert (tagger.make_batches([['a'] * 3] * 3, batch_size=1)
+                == [[0, 1], [2]])
 
         # a sentence exceeding the budget alone forms a singleton batch
         tagger.max_spans_per_batch = 5

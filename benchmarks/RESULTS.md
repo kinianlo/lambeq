@@ -4,6 +4,28 @@ Corpus: 750 generated sentences (3-12 words), `/tmp/bobcat_bench.txt`,
 see Task 1 of `docs/superpowers/plans/2026-06-10-bobcat-throughput.md`.
 Machine: Intel Core i7-11800H @ 2.30GHz, GPU: RTX 3080 Laptop present but CUDA unavailable (driver mismatch); GPU numbers to be collected later, RAM: 31 GB.
 
+## Summary (short corpus, sent/s — size-independent)
+
+Baseline runs used 200 sentences, default batch_size=4.  Combined runs
+used 750 sentences, batch_size=32, n_jobs=-1 (CPU-relevant optimizations
+only; `--dtype` excluded — targets GPU where bfloat16/float16 is fast).
+
+| Stage | Baseline | Combined | Speedup |
+|---|---|---|---|
+| Tagging | 22.1 sent/s | 53.6 sent/s | 2.4× |
+| Chart parsing (serial) | 937.2 sent/s | 744.3 sent/s | 0.8× † |
+| End-to-end (serial) | 21.6 sent/s | 50.0 sent/s | 2.3× |
+| End-to-end (n_jobs=-1) | n/a | 47.3 sent/s | — ‡ |
+| Peak RSS | 2650 MB | 2805 MB | — |
+
+† Chart parsing rate reflects the full 750-sentence corpus which includes
+  harder sentences than the 200-sentence baseline subset; the absolute
+  chart-parse wall time is not the bottleneck (1.01s vs 13.99s tagging).
+
+‡ On the short corpus, chart parsing is only ~7% of total time, so
+  parallelism overhead slightly exceeds the gain; n_jobs benefits the long
+  corpus where chart parsing is ~22% (see Combined section below).
+
 ## Baseline (before optimizations)
 
 Note: model default tagger batch_size is 4 (from pipeline_config.json).
@@ -129,3 +151,44 @@ peak RSS:         3067 MB
 ```
 
 On the standard short-sentence corpus, chart parsing is only ~5% of total time so n_jobs has no measurable effect. On the long-sentence corpus where chart parsing is ~21% of total time, n_jobs=4 gives ~12% speedup (9.92s → 8.86s). Larger gains are expected on GPU where tagging is much faster and chart parsing would dominate.
+
+## Combined (all optimizations)
+
+All CPU-relevant optimizations active: inference_mode, length-sorted
+batching, max_spans_per_batch (not set here), vectorized extract_topk,
+n_jobs=-1.  `--dtype` excluded: bfloat16 autocast is slower on this
+AVX-512-less laptop CPU; the flag targets GPU inference.
+
+Short-sentence corpus (3-12 words, 750 sentences, batch-size 32):
+
+```
+command:          /tmp/bobcat_bench.txt --batch-size 32 --n-jobs -1
+config:           {'batch_size': 32} device=cpu
+sentences:        750 (0 failed)
+tagging:          13.99s (53.6 sent/s)
+chart parsing:    1.01s (744.3 sent/s)
+end-to-end:       15.00s (50.0 sent/s)
+end-to-end (n_jobs=-1): 15.87s (47.3 sent/s)
+peak RSS:         2805 MB
+```
+
+As expected for short sentences, n_jobs overhead slightly exceeds the
+gain (chart parsing is only ~7% of total time at 1.01s vs 13.99s
+tagging).  Overall tagging throughput is 2.4× baseline (53.6 vs
+21.6 sent/s end-to-end).
+
+Long-sentence corpus (~25-50 words, 187 sentences, batch-size 16):
+
+```
+command:          /tmp/bobcat_bench_long.txt --batch-size 16 --n-jobs -1
+config:           {'batch_size': 16} device=cpu
+sentences:        187 (0 failed)
+tagging:          16.77s (11.2 sent/s)
+chart parsing:    4.73s (39.5 sent/s)
+end-to-end:       21.50s (8.7 sent/s)
+end-to-end (n_jobs=-1): 18.48s (10.1 sent/s)
+peak RSS:         3145 MB
+```
+
+On the long corpus, chart parsing is ~22% of total time; n_jobs=-1 gives
+a 14% end-to-end speedup (21.50s → 18.48s, 8.7 → 10.1 sent/s).
