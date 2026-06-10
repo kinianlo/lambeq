@@ -139,7 +139,7 @@ impl Rules {
 
     /// Apply all unary type-changing rules to a single node (Rule::U).
     pub fn type_change_node(&self, node: &Rc<Node>) -> Vec<Rc<Node>> {
-        self.type_change_cat(Rule::U, &node.cat.clone(), node, None, &self.grammar.unary_rules)
+        self.type_change_cat(Rule::U, &node.cat, node, None, &self.grammar.unary_rules)
     }
 
     /// rules.py:178-193. Apply type-changing rules by matching `cat` against

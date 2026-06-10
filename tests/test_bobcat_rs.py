@@ -160,3 +160,23 @@ def test_combine_matches_python_on_all_rule_instances(
         assert got == expected, (left_str, right_str)
         checked += 1
     assert checked > 1000
+
+
+def test_left_comma_type_change_fires(py_rules_full, rs_rules_full):
+    # pin the punct type-change gating: a known comma rule must produce
+    # output through the full combine path, not vanish silently
+    from lambeq.bobcat.tree import Lexical
+    rules, marked_up = py_rules_full
+    fired = []
+    for left_str in (',', ';'):
+        if left_str not in marked_up:
+            continue
+        for right_str in list(marked_up)[::3]:
+            left = Lexical(marked_up[left_str], 'l', 1)
+            right = Lexical(marked_up[right_str], 'r', 2)
+            expected = [(t.rule.name, repr(t.cat))
+                        for t in rules.combine(left, right)]
+            got = rs_rules_full.debug_combine_repr(left_str, right_str)
+            assert got == expected, (left_str, right_str)
+            fired += [r for r, _ in expected if r in ('LP', 'RP')]
+    assert fired
