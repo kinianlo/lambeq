@@ -29,6 +29,7 @@ import multiprocessing
 import os
 import sys
 from typing import Any
+import warnings
 
 import torch
 from tqdm.auto import tqdm
@@ -348,7 +349,6 @@ class BobcatParser(ModelBasedReader, CCGParser):
             if getattr(self, 'parser_backend', 'python') == 'rust' \
                     and isinstance(self.parser, RustBackend):
                 if n_jobs != 1:
-                    import warnings
                     warnings.warn('`n_jobs` is ignored with the Rust '
                                   'parser backend; it parallelises '
                                   'internally', stacklevel=2)
@@ -359,8 +359,12 @@ class BobcatParser(ModelBasedReader, CCGParser):
                 except Exception as e:
                     # a Rust panic surfaces here; per-sentence failures
                     # come back as None, so this is a whole-batch bug
-                    raise BobcatParseError(
-                        ' '.join(tag_results.sentences[0].words)) from e
+                    if suppress_exceptions:
+                        parse_trees = [None] * len(sentence_inputs)
+                    else:
+                        raise BobcatParseError(
+                            f'<Rust backend batch of '
+                            f'{len(sentence_inputs)} sentences>') from e
                 for sent, tree in zip(tag_results.sentences, parse_trees):
                     if tree is not None:
                         trees.append(self._build_ccgtree(tree))

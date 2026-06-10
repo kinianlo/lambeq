@@ -17,9 +17,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from lambeq.bobcat.lexicon import Category
 from lambeq.bobcat.tree import IndexedWord, ParseTree, Rule, Variable
+
+if TYPE_CHECKING:
+    from lambeq.bobcat.grammar import Grammar
+    from lambeq.bobcat.parser import Sentence
 
 
 def nodes_to_tree(nodes: list[tuple[str, str, str | None, int, int]]
@@ -56,8 +61,8 @@ class RustBackend:
     """
 
     def __init__(self,
-                 grammar,
-                 cats: list[str],
+                 grammar: Grammar,
+                 cats: Iterable[str],
                  root_cats: Iterable[str] | None,
                  eisner_normal_form: bool,
                  max_parse_trees: int,
@@ -85,24 +90,26 @@ class RustBackend:
             list(root_cats) if root_cats is not None else None)
 
     @staticmethod
-    def _to_input(sentence):
+    def _to_input(sentence: Sentence) -> tuple:
         supertags = [[(st.category, st.probability) for st in sts]
                      for sts in sentence.input_supertags]
         return (sentence.words, supertags, sentence.span_scores)
 
-    def parse_batch(self, sentences, num_threads: int = 0):
+    def parse_batch(self,
+                    sentences: Iterable[Sentence],
+                    num_threads: int = 0) -> list[ParseTree | None]:
         """Parse Sentence objects; returns a list of ParseTree | None."""
         results = self._parser.parse_batch(
             [self._to_input(s) for s in sentences], num_threads)
         return [nodes_to_tree(nodes) if nodes is not None else None
                 for nodes in results]
 
-    def __call__(self, sentence):
+    def __call__(self, sentence: Sentence) -> _SingleResult:
         return _SingleResult(self.parse_batch([sentence])[0])
 
 
 class _SingleResult:
-    """Minimal stand-in for ParseResult: indexable, falsy when empty."""
+    """Minimal stand-in for ParseResult covering only what BobcatParser uses: truthiness and index 0."""
 
     def __init__(self, tree: ParseTree | None) -> None:
         self._tree = tree
@@ -110,7 +117,7 @@ class _SingleResult:
     def __bool__(self) -> bool:
         return self._tree is not None
 
-    def __getitem__(self, index: int):
+    def __getitem__(self, index: int) -> ParseTree:
         if self._tree is None or index != 0:
             raise IndexError(index)
         return self._tree
