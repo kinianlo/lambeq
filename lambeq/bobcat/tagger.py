@@ -73,6 +73,60 @@ def span2idx(x: int, y: int) -> int:
     return chart_size(y + 1) - x - 1
 
 
+def extract_topk(logits: torch.Tensor,
+                 lengths: Sequence[int],
+                 top_k: int,
+                 prob_threshold: float,
+                 strategy: str,
+                 skip_index_0: bool) -> list[list[TagListT]]:
+    """Extract the top entries by log probability for each position.
+
+    Parameters
+    ----------
+    logits : torch.Tensor of shape (batch, positions, classes)
+        The raw logits.
+    lengths : sequence of int
+        The real number of positions per batch entry; positions beyond
+        this are padding and are dropped.
+    top_k : int
+        The maximum number of entries to keep per position. If 0, keep
+        all entries.
+    prob_threshold : float
+        The probability used for the threshold to keep entries.
+    strategy : {'relative', 'absolute'}
+        If "relative", the probability threshold is relative to the
+        highest scoring entry, otherwise it is absolute.
+    skip_index_0 : bool
+        Whether entries for class index 0 should be dropped.
+
+    """
+    logits = logits.float()  # autocast may produce reduced precision
+    k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
+    scores, indices = logits.log_softmax(-1).topk(k)
+
+    if prob_threshold == 0:
+        mask = torch.ones_like(scores, dtype=torch.bool)
+    elif strategy == 'relative':
+        mask = scores >= scores[..., :1] + math.log(prob_threshold)
+    else:
+        mask = scores >= math.log(prob_threshold)
+    if skip_index_0:
+        mask = mask & (indices != 0)
+
+    output_batch = []
+    for length, sent_scores, sent_indices, sent_mask in zip(
+            lengths, scores.tolist(), indices.tolist(), mask.tolist()):
+        output_batch.append(
+            [[(index, score)
+              for score, index, keep
+              in zip(pos_scores, pos_indices, pos_mask) if keep]
+             for pos_scores, pos_indices, pos_mask
+             in zip(sent_scores[:length],
+                    sent_indices[:length],
+                    sent_mask[:length])])
+    return output_batch
+
+
 @dataclass
 class ChartClassifierOutput(ModelOutput):
     loss: torch.FloatTensor | None = None
@@ -352,47 +406,21 @@ class Tagger:
         outputs = self.model(**{k: torch.as_tensor(v, device=self.model.device)
                                 for k, v in encodings.items()})
 
-        tag_output: list[list[TagListT]] = []
-        span_output: list[list[TagListT]] = []
-
         tag_lengths = [len(sentence) for sentence in inputs]
         span_lengths = [chart_size(length) for length in tag_lengths]
 
-        tag_args = (tag_output,
-                    tag_lengths,
-                    outputs.tag_logits,
-                    self.tag_top_k,
-                    self.tag_prob_threshold,
-                    self.tag_prob_threshold_strategy)
-        span_args = (span_output,
-                     span_lengths,
-                     outputs.span_logits,
-                     self.span_top_k,
-                     self.span_prob_threshold,
-                     self.span_prob_threshold_strategy)
-
-        for output_batch, lengths, logits, top_k, prob_threshold, strategy in (
-                tag_args, span_args):
-            k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
-            logprobs = logits.log_softmax(-1).topk(k)
-            for length, sentence_scores, sentence_indices in zip(
-                    lengths, logprobs.values, logprobs.indices):
-                output_list: list[TagListT] = []
-                output_batch.append(output_list)
-                for scores, indices in zip(sentence_scores[:length].tolist(),
-                                           sentence_indices[:length].tolist()):
-                    output: TagListT = []
-                    output_list.append(output)
-                    if prob_threshold == 0:
-                        threshold = -float('inf')
-                    else:
-                        top_score = scores[0] if strategy == 'relative' else 0
-                        threshold = top_score + math.log(prob_threshold)
-                    for score, index in zip(scores, indices):
-                        if score < threshold:
-                            break
-                        elif index != 0 or output_batch == tag_output:
-                            output.append((index, score))
+        tag_output = extract_topk(outputs.tag_logits,
+                                  tag_lengths,
+                                  self.tag_top_k,
+                                  self.tag_prob_threshold,
+                                  self.tag_prob_threshold_strategy,
+                                  skip_index_0=False)
+        span_output = extract_topk(outputs.span_logits,
+                                   span_lengths,
+                                   self.span_top_k,
+                                   self.span_prob_threshold,
+                                   self.span_prob_threshold_strategy,
+                                   skip_index_0=True)
 
         spans_list = [[(*idx2span(i), output)
                        for i, output in enumerate(sent_span_output)
