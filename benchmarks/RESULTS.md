@@ -17,3 +17,15 @@ chart parsing:    0.21s (937.2 sent/s)
 end-to-end:       9.27s (21.6 sent/s)
 peak RSS:         2650 MB
 ```
+
+## After inference_mode (Task 2)
+
+```
+command:          /tmp/bobcat_bench.txt --num 200
+config:           {} device=cpu
+sentences:        200 (0 failed)
+tagging:          8.18s (24.4 sent/s)
+chart parsing:    0.20s (1007.4 sent/s)
+end-to-end:       8.38s (23.9 sent/s)
+peak RSS:         2505 MB
+```

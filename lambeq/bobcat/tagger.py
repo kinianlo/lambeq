@@ -335,6 +335,7 @@ class Tagger:
 
         return encodings
 
+    @torch.inference_mode()
     def parse(self,
               inputs: Sequence[Sequence[str]]) -> list[TaggerOutputSentence]:
         """Parse a batch of sentences."""

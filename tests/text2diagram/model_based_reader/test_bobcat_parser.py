@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 from io import StringIO
 from unittest.mock import patch
@@ -215,3 +216,15 @@ def test_root_filtering(bobcat_parser):
         assert bobcat_parser.sentence2tree(sentence2).biclosed_type == N
     finally:
         bobcat_parser.parser.set_root_cats(None)
+
+
+def test_tagger_uses_inference_mode(bobcat_parser):
+    recorded = []
+    handle = bobcat_parser.tagger.model.register_forward_pre_hook(
+        lambda module, args: recorded.append(
+            torch.is_inference_mode_enabled()))
+    try:
+        bobcat_parser.tagger.parse([['Alice', 'likes', 'Bob']])
+    finally:
+        handle.remove()
+    assert recorded == [True]
