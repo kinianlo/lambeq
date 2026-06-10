@@ -373,3 +373,18 @@ Summary: chart stage on long sentences 2.53s -> 0.14s serial (18x) ->
 chart parser is no longer the bottleneck on GPU: tagging now dominates
 (0.61s vs 0.04s). Short corpus end-to-end reaches 1946 sent/s
 (6.6x vs main's 297 sent/s best on this machine).
+
+## Rust CKY core — beaker `animal-206-2`, NVIDIA A40 (SGE job 6954085)
+
+| corpus | backend | tagging | chart serial | chart parse_batch | end-to-end |
+|--------|---------|--------:|-------------:|------------------:|-----------:|
+| long (187, batch 16) | python | 170.6 | 38.0 | — | 31.1 |
+| long (187, batch 16) | rust   | 163.1 | 689.0 | 1401.7 | 131.9 |
+| short (750, batch 32) | rust  | 697.0 | 4990.4 | 2649.8 | 611.6 |
+
+(sent/s.) Chart stage on long sentences: 4.92s -> 0.27s serial (18x) ->
+0.13s with rayon (38x). End-to-end 31.1 -> 131.9 sent/s (4.2x). Note the
+short-corpus parse_batch line is SLOWER than serial here (0.28s vs
+0.15s): the node was shared and per-sentence work is so small that the
+pool spin-up dominates — consistent with rayon paying off only when
+per-sentence chart work is non-trivial.
