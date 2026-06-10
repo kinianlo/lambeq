@@ -52,18 +52,6 @@ end-to-end:       3.72s (53.8 sent/s)
 peak RSS:         2620 MB
 ```
 
-## After vectorized post-processing (Task 5)
-
-```
-command:          /tmp/bobcat_bench.txt --num 200 --batch-size 32
-config:           {'batch_size': 32} device=cpu
-sentences:        200 (0 failed)
-tagging:          3.72s (53.8 sent/s)
-chart parsing:    0.19s (1053.3 sent/s)
-end-to-end:       3.91s (51.2 sent/s)
-peak RSS:         2609 MB
-```
-
 ## After span-budget batching (Task 4)
 
 ```
@@ -84,4 +72,16 @@ tagging:          4.96s (40.3 sent/s)
 chart parsing:    0.21s (938.8 sent/s)
 end-to-end:       5.18s (38.6 sent/s)
 peak RSS:         2840 MB
+```
+
+## After vectorized post-processing (Task 5)
+
+```
+command:          /tmp/bobcat_bench.txt --num 200 --batch-size 32
+config:           {'batch_size': 32} device=cpu
+sentences:        200 (0 failed)
+tagging:          3.72s (53.8 sent/s)
+chart parsing:    0.19s (1053.3 sent/s)
+end-to-end:       3.91s (51.2 sent/s)
+peak RSS:         2609 MB
 ```
