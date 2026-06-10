@@ -23,3 +23,4 @@ docs/puml/img
 
 # ignore notebooks not part of the official docs
 **/ntbks/
+rust/target/
