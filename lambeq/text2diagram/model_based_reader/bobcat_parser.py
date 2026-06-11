@@ -116,6 +116,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  verbose: str = VerbosityLevel.PROGRESS.value,
                  parser_backend: str = 'auto',
                  compile_model: bool = False,
+                 tagger_backend: str = 'torch',
                  **kwargs: Any) -> None:
         """Instantiate a BobcatParser.
 
@@ -159,6 +160,12 @@ class BobcatParser(ModelBasedReader, CCGParser):
             Wrap the BERT encoder with `torch.compile(dynamic=True)`.
             The first forward pass pays a significant compilation
             latency; worth it for corpus-scale runs.
+        tagger_backend : {'torch', 'onnx'}, default: 'torch'
+            Which backend to use for the tagger encoder. 'onnx' runs the
+            BERT encoder via onnxruntime for potentially faster
+            inference; requires `tools/export_onnx.py` to have been run
+            first and the `onnxruntime` (or `onnxruntime-gpu`) package
+            to be installed.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -232,12 +239,14 @@ class BobcatParser(ModelBasedReader, CCGParser):
         self._initialise_model(root_cats=root_cats,
                                parser_backend=parser_backend,
                                compile_model=compile_model,
+                               tagger_backend=tagger_backend,
                                **kwargs)
 
     def _initialise_model(self,
                           root_cats: Iterable[str] | None = None,
                           parser_backend: str = 'auto',
                           compile_model: bool = False,
+                          tagger_backend: str = 'torch',
                           **kwargs) -> None:
         """Initialise the model and load it into the appropriate device.
 
@@ -248,6 +257,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         if not isinstance(compile_model, bool):
             raise ValueError(f'Invalid `compile_model`: {compile_model}')
+
+        if tagger_backend not in ('torch', 'onnx'):
+            raise ValueError(f'Invalid `tagger_backend`: {tagger_backend!r}')
 
         user_set = {k for k in ('dtype', 'batch_size') if k in kwargs}
 
@@ -282,7 +294,29 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if compile_model:
             model.bert = torch.compile(model.bert, dynamic=True)
 
-        self.tagger = Tagger(model, tokenizer, **config['tagger'])
+        onnx_session = None
+        if tagger_backend == 'onnx':
+            try:
+                import onnxruntime
+            except ImportError as e:
+                raise ImportError(
+                    "tagger_backend='onnx' requires onnxruntime; pip "
+                    'install onnxruntime (or onnxruntime-gpu)') from e
+            onnx_path = self.model_dir / 'bobcat-body.onnx'
+            if not onnx_path.exists():
+                raise FileNotFoundError(
+                    f'{onnx_path} not found; run tools/export_onnx.py '
+                    'first')
+            providers = (['CUDAExecutionProvider', 'CPUExecutionProvider']
+                         if torch.device(self.device).type == 'cuda'
+                         else ['CPUExecutionProvider'])
+            onnx_session = onnxruntime.InferenceSession(
+                str(onnx_path), providers=providers)
+
+        self.tagger = Tagger(model, tokenizer,
+                             tagger_backend=tagger_backend,
+                             onnx_session=onnx_session,
+                             **config['tagger'])
 
         if parser_backend == 'auto':
             parser_backend = os.environ.get('LAMBEQ_BOBCAT_BACKEND', 'auto')
