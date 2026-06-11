@@ -421,3 +421,13 @@ and the fused lane. Corpus gate after Tier 3: 937/937 identical
 Tier progression on this machine, long corpus end-to-end:
 main 50.9 -> Tier 1 76.2 -> Tier 2 249.1 -> Tier 3 475.4 sent/s (9.3x).
 Short corpus: main 297 -> Tier 3 1870 sent/s (6.3x).
+
+## Tier 3 (tagger) — beaker `animal-206-2`, NVIDIA A40 (SGE job 6954175, shared node)
+
+Long corpus: python reference 33.0 sent/s e2e; rust fused **136.7
+sent/s** (4.1x). Short corpus: rust fused 506.1 sent/s.
+Caveat: unlike on the idle 3090 Ti, the fused lane here measured
+slower than the sum of the separately-timed classic stages (e.g. short:
+1.48s fused vs 1.04s classic sum) — the node was shared and the fused
+lane's CPU-side work (rayon parse + transfers) contends with other
+tenants; treat the A40 numbers as lower bounds.
