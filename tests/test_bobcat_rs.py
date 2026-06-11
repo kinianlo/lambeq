@@ -185,7 +185,8 @@ def test_left_comma_type_change_fires(py_rules_full, rs_rules_full):
 @pytest.fixture(scope='module')
 def bobcat_parser():
     from lambeq import BobcatParser, VerbosityLevel
-    return BobcatParser(verbose=VerbosityLevel.SUPPRESS.value)
+    return BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                        parser_backend='python')
 
 
 @pytest.fixture(scope='module')
@@ -245,3 +246,110 @@ def test_parse_batch_parallel_matches_serial(bobcat_parser, rs_parser):
     serial = rs_parser.parse_batch(inputs, 1)
     parallel = rs_parser.parse_batch(inputs, 0)   # 0 = all cores
     assert serial == parallel
+
+
+def _raw_configured_parser(grammar_data, bobcat_parser):
+    rs = bobcat_rs.RustChartParser(
+        grammar_data['categories'],
+        [tuple(r) for r in grammar_data['binary_rules']],
+        [tuple(r) for r in grammar_data['type_changing_rules']],
+        [tuple(r) for r in grammar_data['type_raising_rules']],
+        bobcat_parser.tagger.model.config.cats,
+        None, True, 50000, 32, 1.0, 0.01, 1e-05)
+    t = bobcat_parser.tagger
+    rs.configure_raw(t.model.config.tags,
+                     t.tag_prob_threshold, t.tag_prob_threshold_strategy,
+                     t.span_prob_threshold, t.span_prob_threshold_strategy)
+    return rs
+
+
+def test_parse_batch_raw_matches_classic_lane(grammar_data, bobcat_parser,
+                                              rs_parser):
+    rs_raw = _raw_configured_parser(grammar_data, bobcat_parser)
+    out = _tagged(bobcat_parser, SENTENCES)
+    classic = rs_parser.parse_batch(_rust_inputs(bobcat_parser, out))
+    words = [s.split() for s in SENTENCES]
+    raw = bobcat_parser.tagger.forward_topk(words)
+    raw_results = rs_raw.parse_batch_raw(
+        words, raw[0].numpy(), raw[1].numpy(),
+        raw[2].numpy(), raw[3].numpy())
+    assert raw_results == classic
+
+
+def test_parse_batch_raw_requires_configuration(grammar_data,
+                                                bobcat_parser, rs_parser):
+    import numpy as np
+    z3f = np.zeros((1, 1, 1), dtype=np.float32)
+    z3i = np.zeros((1, 1, 1), dtype=np.int64)
+    with pytest.raises(ValueError):
+        rs_parser.parse_batch_raw([['a']], z3f, z3i, z3f, z3i)
+
+
+def test_fused_lane_in_sentences2trees(bobcat_parser):
+    from lambeq import BobcatParser, VerbosityLevel
+    rust_parser = BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                               parser_backend='rust')
+    assert (rust_parser.sentences2trees(
+                SENTENCES, verbose=VerbosityLevel.SUPPRESS.value)
+            == bobcat_parser.sentences2trees(
+                SENTENCES, verbose=VerbosityLevel.SUPPRESS.value))
+
+
+@pytest.mark.parametrize('tag_p,tag_strat,span_p,span_strat', [
+    (0.002, 'relative', 0.0003, 'relative'),   # shipped config
+    (0.01, 'absolute', 0.001, 'absolute'),
+    (0, 'relative', 0, 'relative'),            # keep-all
+    (1, 'relative', 1, 'relative'),            # top-score-only
+])
+def test_raw_thresholding_matches_extract_topk(grammar_data, bobcat_parser,
+                                               tag_p, tag_strat,
+                                               span_p, span_strat):
+    """Random logits, all threshold strategies: classic assembly
+    (extract_topk + Sentence tuples -> parse_batch) must equal the raw
+    lane (topk tensors -> parse_batch_raw) tree-for-tree."""
+    import torch
+    from lambeq.bobcat.tagger import chart_size, extract_topk, idx2span
+    tagger = bobcat_parser.tagger
+    n_tags = len(tagger.model.config.tags)
+    n_cats = len(tagger.model.config.cats)
+    words = [['w%d' % j for j in range(n)] for n in (3, 7, 12)]
+    W = max(len(w) for w in words)
+    S = chart_size(W)
+    torch.manual_seed(42)
+    tag_logits = torch.randn(len(words), W, n_tags)
+    span_logits = torch.randn(len(words), S, n_cats)
+
+    rs = bobcat_rs.RustChartParser(
+        grammar_data['categories'],
+        [tuple(r) for r in grammar_data['binary_rules']],
+        [tuple(r) for r in grammar_data['type_changing_rules']],
+        [tuple(r) for r in grammar_data['type_raising_rules']],
+        bobcat_parser.tagger.model.config.cats,
+        None, True, 50000, 32, 1.0, 0.01, 1e-05)
+    rs.configure_raw(tagger.model.config.tags,
+                     tag_p, tag_strat, span_p, span_strat)
+
+    # classic assembly (mirrors Tagger.parse + _prepare_sentence)
+    tags_list = tagger.model.config.tags
+    tag_out = extract_topk(tag_logits, [len(w) for w in words],
+                           tagger.tag_top_k, tag_p, tag_strat, False)
+    span_out = extract_topk(span_logits,
+                            [chart_size(len(w)) for w in words],
+                            tagger.span_top_k, span_p, span_strat, True)
+    classic_inputs = []
+    for w, t_rows, s_rows in zip(words, tag_out, span_out):
+        supertags = [[(tags_list[i], sc) for i, sc in row] for row in t_rows]
+        spans = {idx2span(i): {ci: cs for ci, cs in row}
+                 for i, row in enumerate(s_rows) if row}
+        classic_inputs.append((w, supertags, spans))
+    classic = rs.parse_batch(classic_inputs)
+
+    def topk(logits, k):
+        s, i = logits.float().log_softmax(-1).topk(k)
+        return s.cpu().contiguous(), i.cpu().contiguous()
+
+    ts, ti = topk(tag_logits, tagger.tag_top_k)
+    ss, si = topk(span_logits, tagger.span_top_k)
+    raw = rs.parse_batch_raw(words, ts.numpy(), ti.numpy(),
+                             ss.numpy(), si.numpy())
+    assert raw == classic

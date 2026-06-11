@@ -293,6 +293,12 @@ class BobcatParser(ModelBasedReader, CCGParser):
                     "parser_backend='rust' requires the bobcat_rs "
                     'extension; build it with `pip install ./rust` '
                     '(needs a Rust toolchain, see rustup.rs)') from e
+            self.parser.configure_raw(
+                self.tagger.model.config.tags,
+                self.tagger.tag_prob_threshold,
+                self.tagger.tag_prob_threshold_strategy,
+                self.tagger.span_prob_threshold,
+                self.tagger.span_prob_threshold_strategy)
         else:
             self.parser = ChartParser(grammar,
                                       self.tagger.model.config.cats,
@@ -368,75 +374,91 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if sentences_valid:
             if verbose == VerbosityLevel.TEXT.value:
                 print('Tagging sentences.', file=sys.stderr)
-            tag_results = self.tagger(sentences_valid, verbose=verbose)
-            tags = tag_results.tags
-            if verbose == VerbosityLevel.TEXT.value:
-                print('Parsing tagged sentences.', file=sys.stderr)
             if getattr(self, 'parser_backend', 'python') == 'rust' \
                     and isinstance(self.parser, RustBackend):
                 if n_jobs != 1:
                     warnings.warn('`n_jobs` is ignored with the Rust '
                                   'parser backend; it parallelises '
                                   'internally', stacklevel=2)
-                sentence_inputs = [self._prepare_sentence(sent, tags)
-                                   for sent in tag_results.sentences]
-                try:
-                    parse_trees = self.parser.parse_batch(sentence_inputs)
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except BaseException as e:
-                    # a Rust panic surfaces here as PanicException, which
-                    # derives from BaseException, not Exception;
-                    # per-sentence failures come back as None, so this is
-                    # a whole-batch bug
-                    if suppress_exceptions:
-                        parse_trees = [None] * len(sentence_inputs)
-                    else:
-                        raise BobcatParseError(
-                            f'<Rust backend batch of '
-                            f'{len(sentence_inputs)} sentences>') from e
-                for sent, tree in zip(tag_results.sentences, parse_trees):
-                    if tree is not None:
-                        trees.append(self._build_ccgtree(tree))
-                    elif suppress_exceptions:
-                        trees.append(None)
-                    else:
-                        raise BobcatParseError(' '.join(sent.words))
-            elif n_jobs == 1:
-                for sent in tqdm(
-                        tag_results.sentences,
-                        desc='Parsing tagged sentences',
-                        leave=False,
-                        disable=verbose != VerbosityLevel.PROGRESS.value):
-
-                    try:
-                        sentence_input = self._prepare_sentence(sent, tags)
-                        result = self.parser(sentence_input)
-                        trees.append(self._build_ccgtree(result[0]))
-                    except Exception as e:
-                        if suppress_exceptions:
-                            trees.append(None)
-                        else:
-                            raise BobcatParseError(' '.join(sent.words)) from e
+                if verbose == VerbosityLevel.TEXT.value:
+                    print('Parsing tagged sentences.', file=sys.stderr)
+                trees = self._parse_fused(sentences_valid,
+                                          suppress_exceptions, verbose)
             else:
-                processes = os.cpu_count() if n_jobs == -1 else n_jobs
-                with multiprocessing.Pool(
-                        processes,
-                        initializer=_init_worker,
-                        initargs=(self.parser,
-                                  tags,
-                                  suppress_exceptions)) as pool:
-                    trees = list(tqdm(
-                        pool.imap(_parse_tagged_sentence,
-                                  tag_results.sentences),
-                        desc='Parsing tagged sentences',
-                        total=len(tag_results.sentences),
-                        leave=False,
-                        disable=verbose != VerbosityLevel.PROGRESS.value))
+                tag_results = self.tagger(sentences_valid, verbose=verbose)
+                tags = tag_results.tags
+                if verbose == VerbosityLevel.TEXT.value:
+                    print('Parsing tagged sentences.', file=sys.stderr)
+                if n_jobs == 1:
+                    for sent in tqdm(
+                            tag_results.sentences,
+                            desc='Parsing tagged sentences',
+                            leave=False,
+                            disable=verbose != VerbosityLevel.PROGRESS.value):
+
+                        try:
+                            sentence_input = self._prepare_sentence(sent, tags)
+                            result = self.parser(sentence_input)
+                            trees.append(self._build_ccgtree(result[0]))
+                        except Exception as e:
+                            if suppress_exceptions:
+                                trees.append(None)
+                            else:
+                                raise BobcatParseError(
+                                    ' '.join(sent.words)) from e
+                else:
+                    processes = os.cpu_count() if n_jobs == -1 else n_jobs
+                    with multiprocessing.Pool(
+                            processes,
+                            initializer=_init_worker,
+                            initargs=(self.parser,
+                                      tags,
+                                      suppress_exceptions)) as pool:
+                        trees = list(tqdm(
+                            pool.imap(_parse_tagged_sentence,
+                                      tag_results.sentences),
+                            desc='Parsing tagged sentences',
+                            total=len(tag_results.sentences),
+                            leave=False,
+                            disable=verbose != VerbosityLevel.PROGRESS.value))
 
         for i in empty_indices:
             trees.insert(i, None)
 
+        return trees
+
+    def _parse_fused(self,
+                     sentences: list[list[str]],
+                     suppress_exceptions: bool,
+                     verbose: str) -> list[CCGTree]:
+        """Tag and parse via the fused raw-tensor Rust lane."""
+        tagger = self.tagger
+        trees: list[CCGTree | None] = [None] * len(sentences)
+        batches = tagger.make_batches(sentences, tagger.batch_size)
+        for batch in tqdm(
+                batches,
+                desc='Parsing sentences',
+                leave=False,
+                disable=verbose != VerbosityLevel.PROGRESS.value):
+            words = [list(sentences[i]) for i in batch]
+            raw = tagger.forward_topk(words)
+            try:
+                parse_trees = self.parser.parse_raw(words, *raw)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                # Rust panics derive from BaseException, not Exception
+                if suppress_exceptions:
+                    parse_trees = [None] * len(batch)
+                else:
+                    raise BobcatParseError(
+                        f'<Rust backend batch of {len(batch)} '
+                        f'sentences>') from e
+            for i, parse_tree in zip(batch, parse_trees):
+                if parse_tree is not None:
+                    trees[i] = self._build_ccgtree(parse_tree)
+                elif not suppress_exceptions:
+                    raise BobcatParseError(' '.join(sentences[i]))
         return trees
 
     @staticmethod

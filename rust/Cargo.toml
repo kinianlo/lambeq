@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["abi3-py310"] }
+numpy = "0.22"
 rayon = "1.10"
 rustc-hash = "2"
 

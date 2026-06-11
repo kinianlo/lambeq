@@ -15,8 +15,11 @@ mod parser;
 mod rules;
 mod tree;
 
+use pyo3::exceptions::PyValueError;
+use numpy::PyUntypedArrayMethods;
+
 use crate::grammar::Grammar;
-use crate::parser::{serialize_tree, ChartParser, SerNode};
+use crate::parser::{chart_size, serialize_tree, ChartParser, SerNode};
 use crate::rules::Rules;
 use crate::tree::lexical;
 
@@ -241,6 +244,119 @@ impl RustChartParser {
     fn set_root_cats(&mut self, root_cats: Option<Vec<String>>) -> PyResult<()> {
         self.parser.set_root_cats(root_cats);
         Ok(())
+    }
+
+    /// Configure the raw top-k handoff lane. `tags` maps model tag ids to
+    /// plain category strings (resolved to marked-up categories internally);
+    /// the strategy strings are `'relative'` or `'absolute'`.
+    fn configure_raw(
+        &mut self,
+        tags: Vec<String>,
+        tag_prob_threshold: f64,
+        tag_prob_threshold_strategy: String,
+        span_prob_threshold: f64,
+        span_prob_threshold_strategy: String,
+    ) -> PyResult<()> {
+        self.parser.configure_raw(
+            &tags,
+            tag_prob_threshold,
+            tag_prob_threshold_strategy == "relative",
+            span_prob_threshold,
+            span_prob_threshold_strategy == "relative",
+        );
+        Ok(())
+    }
+
+    /// Parse a batch directly from the tagger's CPU top-k tensors, replicating
+    /// `extract_topk` + `_prepare_sentence` in Rust (the fused lane).
+    ///
+    /// `tag_scores`/`tag_indices` have shape `[B, W, k_tag]` and
+    /// `span_scores`/`span_indices` shape `[B, S, k_span]`, where `W` is the
+    /// padded word count and `S` the padded span count. Requires a prior
+    /// `configure_raw`. Same `num_threads` semantics as `parse_batch`.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (words, tag_scores, tag_indices, span_scores, span_indices, num_threads = 0))]
+    fn parse_batch_raw(
+        &self,
+        py: Python<'_>,
+        words: Vec<Vec<String>>,
+        tag_scores: numpy::PyReadonlyArray3<'_, f32>,
+        tag_indices: numpy::PyReadonlyArray3<'_, i64>,
+        span_scores: numpy::PyReadonlyArray3<'_, f32>,
+        span_indices: numpy::PyReadonlyArray3<'_, i64>,
+        num_threads: usize,
+    ) -> PyResult<Vec<Option<Vec<SerNode>>>> {
+        if !self.parser.is_raw_configured() {
+            return Err(PyValueError::new_err(
+                "parse_batch_raw requires configure_raw to be called first",
+            ));
+        }
+
+        let b = words.len();
+        let max_words = words.iter().map(|w| w.len()).max().unwrap_or(0);
+        let max_spans = chart_size(max_words);
+
+        let ts = tag_scores.shape();
+        let ti = tag_indices.shape();
+        let ss = span_scores.shape();
+        let si = span_indices.shape();
+        if ts[0] != b || ti[0] != b || ss[0] != b || si[0] != b {
+            return Err(PyValueError::new_err(
+                "batch dimension of the top-k arrays must equal len(words)",
+            ));
+        }
+        if ts[1] < max_words || ti[1] < max_words {
+            return Err(PyValueError::new_err(
+                "tag arrays' word dimension is smaller than the longest sentence",
+            ));
+        }
+        if ss[1] < max_spans || si[1] < max_spans {
+            return Err(PyValueError::new_err(
+                "span arrays' span dimension is smaller than chart_size of the \
+                 longest sentence",
+            ));
+        }
+        if ts[2] != ti[2] || ss[2] != si[2] {
+            return Err(PyValueError::new_err(
+                "scores and indices must share the same top-k dimension",
+            ));
+        }
+
+        // numpy views cannot cross `allow_threads`; copy into owned, Send
+        // arrays first (a memcpy, negligible next to the parsing work).
+        let tag_scores = tag_scores.as_array().to_owned();
+        let tag_indices = tag_indices.as_array().to_owned();
+        let span_scores = span_scores.as_array().to_owned();
+        let span_indices = span_indices.as_array().to_owned();
+
+        let parse_one = |(sent, w): (usize, &Vec<String>)| {
+            self.parser
+                .parse_one_raw(
+                    w,
+                    sent,
+                    &tag_scores,
+                    &tag_indices,
+                    &span_scores,
+                    &span_indices,
+                )
+                .map(|tree| serialize_tree(&tree))
+        };
+
+        py.allow_threads(|| {
+            if num_threads == 1 {
+                Ok(words.iter().enumerate().map(parse_one).collect())
+            } else {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(num_threads) // 0 = rayon default (all cores)
+                    .build()
+                    .map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "failed to build rayon thread pool: {e}"
+                        ))
+                    })?;
+                Ok(pool.install(|| words.par_iter().enumerate().map(parse_one).collect()))
+            }
+        })
     }
 
     /// Parse a batch of sentences, optionally across rayon worker threads.

@@ -421,20 +421,25 @@ class Tagger:
 
         return encodings
 
-    @torch.inference_mode()
-    def parse(self,
-              inputs: Sequence[Sequence[str]]) -> list[TaggerOutputSentence]:
-        """Parse a batch of sentences."""
-        encodings = self.prepare_inputs(inputs, word_mask=True)
+    def _model_output(self,
+                      encodings: dict[str, Any]) -> ChartClassifierOutput:
+        """Run the model forward pass under the configured autocast."""
         if self.dtype is None:
             autocast = contextlib.nullcontext()
         else:
             autocast = torch.autocast(device_type=self.model.device.type,
                                       dtype=getattr(torch, self.dtype))
         with autocast:
-            outputs = self.model(
+            return self.model(
                 **{k: torch.as_tensor(v, device=self.model.device)
                    for k, v in encodings.items()})
+
+    @torch.inference_mode()
+    def parse(self,
+              inputs: Sequence[Sequence[str]]) -> list[TaggerOutputSentence]:
+        """Parse a batch of sentences."""
+        encodings = self.prepare_inputs(inputs, word_mask=True)
+        outputs = self._model_output(encodings)
 
         tag_lengths = [len(sentence) for sentence in inputs]
         span_lengths = [chart_size(length) for length in tag_lengths]
@@ -459,6 +464,32 @@ class Tagger:
 
         return [TaggerOutputSentence(list(words), tags, spans)
                 for words, tags, spans in zip(inputs, tag_output, spans_list)]
+
+    @torch.inference_mode()
+    def forward_topk(
+        self,
+        inputs: Sequence[Sequence[str]]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the model and return CPU top-k tensors for the raw lane.
+
+        Returns (tag_scores [B, W, k_tag] f32, tag_indices i64,
+        span_scores [B, S, k_span] f32, span_indices i64), where W/S are
+        the padded word/span counts. Thresholding happens downstream
+        (bobcat_rs), with semantics identical to `extract_topk`.
+        """
+        encodings = self.prepare_inputs(inputs, word_mask=True)
+        outputs = self._model_output(encodings)
+
+        def topk(logits: torch.Tensor, top_k: int) -> tuple[torch.Tensor,
+                                                            torch.Tensor]:
+            k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
+            scores, indices = logits.float().log_softmax(-1).topk(k)
+            return scores.cpu().contiguous(), indices.cpu().contiguous()
+
+        tag_scores, tag_indices = topk(outputs.tag_logits, self.tag_top_k)
+        span_scores, span_indices = topk(outputs.span_logits,
+                                         self.span_top_k)
+        return tag_scores, tag_indices, span_scores, span_indices
 
     def make_batches(self,
                      inputs: Sequence[Sequence[str]],

@@ -84,6 +84,27 @@ class RustBackend:
             input_tag_score_weight,
             missing_cat_score,
             missing_span_score)
+        self.raw_configured = False
+
+    def configure_raw(self, tags, tag_prob_threshold,
+                      tag_prob_threshold_strategy, span_prob_threshold,
+                      span_prob_threshold_strategy) -> None:
+        self._parser.configure_raw(list(tags),
+                                   tag_prob_threshold,
+                                   tag_prob_threshold_strategy,
+                                   span_prob_threshold,
+                                   span_prob_threshold_strategy)
+        self.raw_configured = True
+
+    def parse_raw(self, words, tag_scores, tag_indices, span_scores,
+                  span_indices, num_threads: int = 0):
+        results = self._parser.parse_batch_raw(
+            [list(w) for w in words],
+            tag_scores.numpy(), tag_indices.numpy(),
+            span_scores.numpy(), span_indices.numpy(),
+            num_threads)
+        return [nodes_to_tree(nodes) if nodes is not None else None
+                for nodes in results]
 
     def set_root_cats(self, root_cats: Iterable[str] | None = None) -> None:
         self._parser.set_root_cats(

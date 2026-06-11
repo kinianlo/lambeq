@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use numpy::ndarray::Array3;
 use rustc_hash::FxHashMap;
 
 use crate::category::{self, Category, CatRef, ATOM_NP, FEATURE_NONE};
@@ -15,6 +16,37 @@ use crate::rules::Rules;
 use crate::tree::{lexical, Node};
 
 const NEG_INF: f64 = f64::NEG_INFINITY;
+
+/// tagger.py:47 — the number of chart spans for a sentence of `length` words.
+pub fn chart_size(length: usize) -> usize {
+    length * (length + 1) / 2
+}
+
+/// tagger.py:51-63 — the (start, end) span for each chart position, in the
+/// order `for end in 0..length { for start in (0..=end).rev() }`.
+fn chart_spans(length: usize) -> Vec<(u32, u32)> {
+    let mut spans = Vec::with_capacity(chart_size(length));
+    for end in 0..length {
+        for start in (0..=end).rev() {
+            spans.push((start as u32, end as u32));
+        }
+    }
+    spans
+}
+
+/// Configuration for the raw top-k handoff lane (replicates `extract_topk` +
+/// `_prepare_sentence` semantics in Rust). Built at `configure_raw` time.
+pub struct RawConfig {
+    /// `tags[i]` is the marked-up category for model tag id `i`, resolved
+    /// through the grammar's plain->markedup `categories` map. `None` when the
+    /// tag string is not a lexical category — a sentence using it fails like
+    /// the classic lane's missing-key path.
+    pub tags: Vec<Option<CatRef>>,
+    pub tag_prob_threshold: f64,
+    pub tag_strategy_relative: bool,
+    pub span_prob_threshold: f64,
+    pub span_strategy_relative: bool,
+}
 
 // result_cats labels (the Python strings 'conj' / 'unary' / 'binary').
 const LABEL_CONJ: u8 = 0;
@@ -32,6 +64,7 @@ pub struct ChartParser {
     missing_span_score: f64,
     result_cats: FxHashMap<ResultKey, u32>,
     root_cats: Option<Vec<CatRef>>,
+    raw_config: Option<RawConfig>,
 }
 
 /// One serialised parse node: (rule_name, plain_cat, word, left_idx, right_idx).
@@ -96,9 +129,37 @@ impl ChartParser {
             missing_span_score,
             result_cats,
             root_cats: None,
+            raw_config: None,
         };
         parser.set_root_cats(root_cats);
         parser
+    }
+
+    /// Build the raw-lane configuration. Tag strings are resolved through the
+    /// grammar's plain->markedup `categories` map (`None` when unresolvable).
+    pub fn configure_raw(
+        &mut self,
+        tag_strs: &[String],
+        tag_prob_threshold: f64,
+        tag_strategy_relative: bool,
+        span_prob_threshold: f64,
+        span_strategy_relative: bool,
+    ) {
+        let tags = tag_strs
+            .iter()
+            .map(|s| self.rules.grammar.categories.get(s).cloned())
+            .collect();
+        self.raw_config = Some(RawConfig {
+            tags,
+            tag_prob_threshold,
+            tag_strategy_relative,
+            span_prob_threshold,
+            span_strategy_relative,
+        });
+    }
+
+    pub fn is_raw_configured(&self) -> bool {
+        self.raw_config.is_some()
     }
 
     /// parser.py:366-377 (plain parse path).
@@ -134,11 +195,124 @@ impl ChartParser {
         out
     }
 
-    /// parser.py:391-467. Returns the best root tree, or None on failure.
+    /// parser.py:391-467 (classic lane). Resolves the per-word supertag
+    /// strings to categories (`None` -> Python KeyError -> parse fails), then
+    /// runs the shared CKY core.
     pub fn parse_one(
         &self,
         words: &[String],
         supertags: &[Vec<(String, f64)>],
+        span_scores: &HashMap<(u32, u32), HashMap<u32, f64>>,
+    ) -> Option<Rc<Node>> {
+        let mut lexical_cats: Vec<Vec<(CatRef, f64)>> = Vec::with_capacity(supertags.len());
+        for sts in supertags {
+            let mut row = Vec::with_capacity(sts.len());
+            for (cat_str, prob) in sts {
+                // Python KeyError -> the parse cannot proceed.
+                let cat = self.rules.grammar.categories.get(cat_str)?.clone();
+                row.push((cat, *prob));
+            }
+            lexical_cats.push(row);
+        }
+        self.parse_core(words, &lexical_cats, span_scores)
+    }
+
+    /// Raw top-k handoff lane: assemble the same internal inputs `parse_core`
+    /// consumes directly from the tagger's CPU top-k tensors, replicating
+    /// `extract_topk` + `_prepare_sentence` exactly, then run the shared core.
+    ///
+    /// `sent` selects the row of each `[B, *, k]` array. Caller must have
+    /// validated shapes and that `configure_raw` ran.
+    pub fn parse_one_raw(
+        &self,
+        words: &[String],
+        sent: usize,
+        tag_scores: &Array3<f32>,
+        tag_indices: &Array3<i64>,
+        span_scores: &Array3<f32>,
+        span_indices: &Array3<i64>,
+    ) -> Option<Rc<Node>> {
+        let cfg = self
+            .raw_config
+            .as_ref()
+            .expect("parse_one_raw called without configure_raw");
+        let n = words.len();
+        if n == 0 {
+            return None;
+        }
+
+        // --- per-word supertags (extract_topk, skip_index_0 = false) ---
+        let k_tag = tag_scores.shape()[2];
+        let mut lexical_cats: Vec<Vec<(CatRef, f64)>> = Vec::with_capacity(n);
+        for w in 0..n {
+            let mut row: Vec<(CatRef, f64)> = Vec::new();
+            let row_top = tag_scores[[sent, w, 0]];
+            for kk in 0..k_tag {
+                let score = tag_scores[[sent, w, kk]];
+                if cfg.tag_prob_threshold != 0.0 {
+                    let thr = if cfg.tag_strategy_relative {
+                        row_top + (cfg.tag_prob_threshold.ln() as f32)
+                    } else {
+                        cfg.tag_prob_threshold.ln() as f32
+                    };
+                    // scores are descending -> first below-threshold ends row.
+                    if score < thr {
+                        break;
+                    }
+                }
+                // Tag index 0 is kept (only spans skip 0).
+                let idx = tag_indices[[sent, w, kk]] as usize;
+                // Unresolvable tag used by this sentence -> fail (like the
+                // classic lane's missing-key path).
+                let cat = cfg.tags.get(idx).and_then(|o| o.clone())?;
+                row.push((cat, score as f64));
+            }
+            lexical_cats.push(row);
+        }
+
+        // --- per-span scores (extract_topk, skip_index_0 = true) ---
+        let k_span = span_scores.shape()[2];
+        let spans = chart_spans(n);
+        let mut span_map: HashMap<(u32, u32), HashMap<u32, f64>> = HashMap::new();
+        for (s, &(start, end)) in spans.iter().enumerate() {
+            let row_top = span_scores[[sent, s, 0]];
+            let mut inner: HashMap<u32, f64> = HashMap::new();
+            for kk in 0..k_span {
+                let score = span_scores[[sent, s, kk]];
+                if cfg.span_prob_threshold != 0.0 {
+                    let thr = if cfg.span_strategy_relative {
+                        row_top + (cfg.span_prob_threshold.ln() as f32)
+                    } else {
+                        cfg.span_prob_threshold.ln() as f32
+                    };
+                    if score < thr {
+                        break;
+                    }
+                }
+                let idx = span_indices[[sent, s, kk]];
+                // Skip index 0 but CONTINUE the scan (prefix-break only on
+                // threshold).
+                if idx == 0 {
+                    continue;
+                }
+                inner.insert(idx as u32, score as f64);
+            }
+            // Only non-empty span positions become keys (mirrors the
+            // `if output` filter in Tagger.parse).
+            if !inner.is_empty() {
+                span_map.insert((start, end), inner);
+            }
+        }
+
+        self.parse_core(words, &lexical_cats, &span_map)
+    }
+
+    /// The shared CKY core (parser.py:391-467, after input assembly). Consumes
+    /// already-resolved per-word lexical categories and the span-score map.
+    fn parse_core(
+        &self,
+        words: &[String],
+        lexical_cats: &[Vec<(CatRef, f64)>],
         span_scores: &HashMap<(u32, u32), HashMap<u32, f64>>,
     ) -> Option<Rc<Node>> {
         let n = words.len();
@@ -150,13 +324,8 @@ impl ChartParser {
         // Lexical cells.
         for i in 0..n {
             let mut results: Vec<Rc<Node>> = Vec::new();
-            for (cat_str, prob) in &supertags[i] {
-                let cat = match self.rules.grammar.categories.get(cat_str) {
-                    Some(c) => c.clone(),
-                    // Python KeyError -> the parse cannot proceed.
-                    None => return None,
-                };
-                let node = lexical(cat, words[i].clone(), (i + 1) as u32);
+            for (cat, prob) in &lexical_cats[i] {
+                let node = lexical(cat.clone(), words[i].clone(), (i + 1) as u32);
                 node.score.set(self.input_tag_score_weight * prob);
                 results.push(node);
             }
