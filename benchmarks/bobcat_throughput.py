@@ -47,6 +47,10 @@ def main() -> None:
                       help="e.g. 'float16' or 'bfloat16'")
     argp.add_argument('--n-jobs', type=int, default=1)
     argp.add_argument('--parser-backend', default=None)
+    argp.add_argument('--compile-model', action='store_true',
+                      help='pass compile_model=True to BobcatParser')
+    argp.add_argument('--tagger-backend', default=None,
+                      help='tagger backend to use (e.g. "torch")')
     args = argp.parse_args()
 
     with open(args.sentence_file) as f:
@@ -62,6 +66,10 @@ def main() -> None:
         kwargs['dtype'] = args.dtype
     if args.parser_backend is not None:
         kwargs['parser_backend'] = args.parser_backend
+    if args.compile_model:
+        kwargs['compile_model'] = True
+    if args.tagger_backend is not None:
+        kwargs['tagger_backend'] = args.tagger_backend
 
     parser = BobcatParser(device=args.device,
                           verbose=VerbosityLevel.SUPPRESS.value,
@@ -98,6 +106,9 @@ def main() -> None:
     n = len(sentences)
     total = tag_time + parse_time
     print(f'command:          {" ".join(sys.argv[1:])}')
+    print(f'tagger: batch_size={parser.tagger.batch_size} '
+          f'dtype={parser.tagger.dtype} '
+          f'backend={parser.tagger.tagger_backend}')
     print(f'config:           {kwargs} device={args.device}')
     print(f'sentences:        {n} ({failures} failed)')
     print(f'tagging:          {tag_time:.2f}s ({rate(n, tag_time)})')
@@ -111,6 +122,13 @@ def main() -> None:
         batch_time = time.perf_counter() - start
         print(f'chart parse_batch: {batch_time:.2f}s '
               f'({rate(n, batch_time)})')
+        start = time.perf_counter()
+        parser.sentences2trees(sentences,
+                               tokenised=True,
+                               suppress_exceptions=True,
+                               verbose=VerbosityLevel.SUPPRESS.value)
+        fused_time = time.perf_counter() - start
+        print(f'fused end-to-end:  {fused_time:.2f}s ({rate(n, fused_time)})')
 
     print(f'end-to-end:       {total:.2f}s ({rate(n, total)})')
 
