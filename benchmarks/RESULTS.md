@@ -457,3 +457,53 @@ Progression: 160 -> 484 -> 1226 -> 1468 sent/s = **9.2x end-to-end**
 on real captions (3.0x from Tier 1's ceiling). Tier 2's jump comes from
 the chart parser (294 -> 8075 sent/s); Tier 3's from removing the
 Python post-processing between the stages.
+
+## Tier 4 — model compression frontier (distillation, pruning, int8)
+
+Students distilled from the teacher on 1.5M wikitext sentences (KL on
+tag+span logits, tau 2, 3 epochs, A40, ~110 min each). Agreement =
+identical trees vs teacher on 2000 held-out sentences. GPU = 3090 Ti
+fused-lane end-to-end; CPU = i7-11800H batch 16.
+
+| variant | params | identical trees | GPU long | GPU COCO | CPU long |
+|---------|-------:|----------------:|---------:|---------:|---------:|
+| teacher (exact)        | 400M | 100%   | 475 | 1468 | 14.5 |
+| student12              | 186M | 72.8%  | 588 | 1848 | — |
+| student6               | 111M | 64.6%  | 628 | 2053 | 35.4* |
+| student6 width-pruned  |  79M | 64.4%  | 653 | 2164 | — |
+| teacher + torch int8   | 400M | 58.3%† | —   | —    | 30.1 |
+| student6 + torch int8  | 111M | 74.3%‡ | —   | —    | 86.6 |
+
+\* at batch 4; † n=300; ‡ vs fp32 student6, not vs teacher.
+
+**The spec's >=95% identical-trees gate FAILED for every variant** and
+is unreachable by construction: error analysis of the student6
+disagreements (300 held-out sentences) shows mean labeled bracket F1
+0.923 (corpus-level ~0.97), 98/99 same root category, mean 1.18
+supertag flips per 30-word sentence, and a third of disagreements with
+ZERO tag flips — pure scoring tie-breaks on ambiguous attachments
+(punctuation placement, coordination level). Increasing tag/span top-k
+(64/128 -> 128/256) and loosening prob thresholds 4x changed agreement
+by exactly 0.0000: the differences are score-arithmetic effects on
+candidates the chart already considers. Identical-trees demands
+logit-level cloning; the students produce equivalent-quality parses
+with different tie-breaks.
+
+Other findings:
+- Width pruning (-4 heads/layer, FFN 4096->2048, importance-ranked,
+  then 110-min recovery distillation) cost 0.2pt agreement for -28%
+  params and +4% speed: cheap, composes with depth.
+- ONNX Runtime int8 on CPU (VNNI): 30.1 sent/s — parity with torch
+  dynamic int8, not worth the export. ONNX lane now measured as
+  loss/parity on both devices.
+- CPU batch default tuned to 16 (commit f03c71d): +25% CPU for free.
+- Amdahl on GPU: post-Tier-3 the encoder is ~50% of the cycle, so even
+  the 79M student yields only 1.4x e2e on GPU. The big compression
+  payoff is CPU (12 -> 86.6 sent/s = 7.2x with student6+int8) and
+  memory (1.6GB -> 0.1GB quantized).
+
+Packaged students (drop-in via BobcatParser(model_name_or_path=...)):
+$SHARE/distill/bobcat-student{6,12,6w} (+ README in student6); local
+copy at ~/.cache/lambeq/bobcat-student6. Weights NOT published
+externally (derived from Quantinuum's Bobcat weights; licensing
+unverified).
