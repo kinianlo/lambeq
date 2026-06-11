@@ -109,9 +109,11 @@ def main() -> None:
     n = len(sentences)
     total = tag_time + parse_time
     print(f'command:          {" ".join(sys.argv[1:])}')
+    # getattr guards: this script is also run against older checkouts
+    # of lambeq/ (per-tier comparisons) that predate these attributes
     print(f'tagger: batch_size={parser.tagger.batch_size} '
-          f'dtype={parser.tagger.dtype} '
-          f'backend={parser.tagger.tagger_backend}')
+          f"dtype={getattr(parser.tagger, 'dtype', None)} "
+          f"backend={getattr(parser.tagger, 'tagger_backend', 'torch')}")
     print(f'config:           {kwargs} device={args.device}')
     print(f'sentences:        {n} ({failures} failed)')
     print(f'tagging:          {tag_time:.2f}s ({rate(n, tag_time)})')
