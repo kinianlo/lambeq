@@ -396,3 +396,12 @@ def test_gpu_tagger_defaults_helper():
 def test_cpu_parser_keeps_classic_defaults(bobcat_parser):
     assert bobcat_parser.tagger.dtype is None
     assert bobcat_parser.tagger.batch_size == 4
+
+
+def test_compile_model_flag(bobcat_parser):
+    with pytest.raises(ValueError):
+        BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                     compile_model='yes')
+    compiled = BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
+                            compile_model=True)
+    assert type(compiled.tagger.model.bert).__name__ == 'OptimizedModule'

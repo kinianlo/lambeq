@@ -115,6 +115,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  force_download: bool = False,
                  verbose: str = VerbosityLevel.PROGRESS.value,
                  parser_backend: str = 'auto',
+                 compile_model: bool = False,
                  **kwargs: Any) -> None:
         """Instantiate a BobcatParser.
 
@@ -154,6 +155,10 @@ class BobcatParser(ModelBasedReader, CCGParser):
             the pure-Python parser; 'rust' requires the extension;
             'python' forces the pure-Python parser. The environment
             variable LAMBEQ_BOBCAT_BACKEND overrides 'auto'.
+        compile_model : bool, default: False
+            Wrap the BERT encoder with `torch.compile(dynamic=True)`.
+            The first forward pass pays a significant compilation
+            latency; worth it for corpus-scale runs.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -226,11 +231,13 @@ class BobcatParser(ModelBasedReader, CCGParser):
         # Initialise model
         self._initialise_model(root_cats=root_cats,
                                parser_backend=parser_backend,
+                               compile_model=compile_model,
                                **kwargs)
 
     def _initialise_model(self,
                           root_cats: Iterable[str] | None = None,
                           parser_backend: str = 'auto',
+                          compile_model: bool = False,
                           **kwargs) -> None:
         """Initialise the model and load it into the appropriate device.
 
@@ -238,6 +245,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         if parser_backend not in ('auto', 'rust', 'python'):
             raise ValueError(f'Invalid `parser_backend`: {parser_backend!r}')
+
+        if not isinstance(compile_model, bool):
+            raise ValueError(f'Invalid `compile_model`: {compile_model}')
 
         user_set = {k for k in ('dtype', 'batch_size') if k in kwargs}
 
@@ -268,6 +278,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  .eval()
                  .to(self.device))
         tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
+
+        if compile_model:
+            model.bert = torch.compile(model.bert, dynamic=True)
 
         self.tagger = Tagger(model, tokenizer, **config['tagger'])
 
