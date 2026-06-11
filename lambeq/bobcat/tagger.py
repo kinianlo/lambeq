@@ -192,6 +192,34 @@ class BertForChartClassification(BertPreTrainedModel):
 
         self.init_weights()
 
+    def classify(
+        self,
+        sequence_output: torch.Tensor,
+        word_mask: torch.BoolTensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the tag/span heads on encoder output."""
+        if word_mask is not None:
+            # remove ignored tensors and pack remaining ones
+            word_indices = nn.utils.rnn.pad_sequence(
+                [sent_word_mask.nonzero().squeeze(dim=-1)
+                 for sent_word_mask in word_mask],
+                batch_first=True
+            )
+            word_indices = word_indices.unsqueeze(-1).expand(
+                *word_indices.shape, self.config.hidden_size)
+
+            tag_input = sequence_output.gather(-2, word_indices)
+        else:
+            tag_input = sequence_output
+
+        chart_spans = get_chart_spans(tag_input.shape[-2])
+        span_input = tag_input[:, chart_spans].flatten(start_dim=-2)
+
+        tag_logits = self.tag_classifier(self.dropout(tag_input))
+        span_logits = self.span_classifier(self.dropout(span_input))
+
+        return tag_logits, span_logits
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -223,25 +251,7 @@ class BertForChartClassification(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        if word_mask is not None:
-            # remove ignored tensors and pack remaining ones
-            word_indices = nn.utils.rnn.pad_sequence(
-                [sent_word_mask.nonzero().squeeze(dim=-1)
-                 for sent_word_mask in word_mask],
-                batch_first=True
-            )
-            word_indices = word_indices.unsqueeze(-1).expand(
-                *word_indices.shape, self.config.hidden_size)
-
-            tag_input = sequence_output.gather(-2, word_indices)
-        else:
-            tag_input = sequence_output
-
-        chart_spans = get_chart_spans(tag_input.shape[-2])
-        span_input = tag_input[:, chart_spans].flatten(start_dim=-2)
-
-        tag_logits = self.tag_classifier(self.dropout(tag_input))
-        span_logits = self.span_classifier(self.dropout(span_input))
+        tag_logits, span_logits = self.classify(sequence_output, word_mask)
 
         loss = None
         if (tag_labels is not None
