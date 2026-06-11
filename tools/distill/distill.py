@@ -141,7 +141,7 @@ def main() -> None:
             tensors = encode(dev)
             t_out = forward(teacher, tensors)
             s_out = forward(student, tensors)
-            counts = [len(w) for w in dev]
+            counts = tensors['word_mask'].count_nonzero(dim=1).tolist()
             tag_mask, _ = length_masks(counts, t_out.tag_logits.shape[1],
                                        1, device)
             agree = (t_out.tag_logits.argmax(-1)[tag_mask]
@@ -169,7 +169,7 @@ def main() -> None:
             with torch.inference_mode():
                 t_out = forward(teacher, tensors)
             s_out = forward(student, tensors)
-            counts = [len(w) for w in words]
+            counts = tensors['word_mask'].count_nonzero(dim=1).tolist()
             tag_mask, span_mask = length_masks(
                 counts, t_out.tag_logits.shape[1],
                 t_out.span_logits.shape[1], device)
