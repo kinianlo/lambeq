@@ -507,3 +507,16 @@ $SHARE/distill/bobcat-student{6,12,6w} (+ README in student6); local
 copy at ~/.cache/lambeq/bobcat-student6. Weights NOT published
 externally (derived from Quantinuum's Bobcat weights; licensing
 unverified).
+
+## Fused-lane pipelining (forward/parse overlap)
+
+`_parse_fused` now prefetches batch k+1's GPU forward on a background
+thread while batch k parses in Rust (CUDA only; CPU stays sequential —
+the stages would share cores). Correctness: 120/120 trees identical
+with the threaded path forced on CPU; suites green on both backends.
+
+A/B on beaker `gonzo-605-8` (GTX 1080 Ti — Pascal, slow fp16, so the
+forward dominates and this UNDERSTATES the gain): COCO 216.2 -> 234.8
+sent/s (+8.6%, 2 reps each, clean separation); long corpus ~0 (parse
+share <7% of the cycle on this card). 3090 Ti long-corpus measurement
+(expected ~+35% from the component profile) pending lab-pool return.

@@ -24,6 +24,7 @@ from __future__ import annotations
 __all__ = ['BobcatParser', 'BobcatParseError']
 
 from collections.abc import Iterable
+import concurrent.futures
 import json
 import multiprocessing
 import os
@@ -483,34 +484,55 @@ class BobcatParser(ModelBasedReader, CCGParser):
                      sentences: list[list[str]],
                      suppress_exceptions: bool,
                      verbose: str) -> list[CCGTree]:
-        """Tag and parse via the fused raw-tensor Rust lane."""
+        """Tag and parse via the fused raw-tensor Rust lane.
+
+        On CUDA devices, the model forward for batch k+1 runs on a
+        background thread while the Rust parse of batch k runs on the
+        CPU: `parse_batch_raw` releases the GIL and copies its inputs,
+        and at most one forward is ever in flight, so the one-deep
+        prefetch is safe. On CPU the stages share the same cores, so
+        the loop stays sequential.
+        """
         tagger = self.tagger
         trees: list[CCGTree | None] = [None] * len(sentences)
         batches = tagger.make_batches(sentences, tagger.batch_size)
-        for batch in tqdm(
-                batches,
-                desc='Parsing sentences',
-                leave=False,
-                disable=verbose != VerbosityLevel.PROGRESS.value):
+        prefetch = tagger.model.device.type == 'cuda'
+
+        def forward(batch: list[int]) -> tuple[list[list[str]], tuple]:
             words = [list(sentences[i]) for i in batch]
-            raw = tagger.forward_topk(words)
-            try:
-                parse_trees = self.parser.parse_raw(words, *raw)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except BaseException as e:
-                # Rust panics derive from BaseException, not Exception
-                if suppress_exceptions:
-                    parse_trees = [None] * len(batch)
+            return words, tagger.forward_topk(words)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = (pool.submit(forward, batches[0])
+                      if prefetch and batches else None)
+            for bi, batch in enumerate(tqdm(
+                    batches,
+                    desc='Parsing sentences',
+                    leave=False,
+                    disable=verbose != VerbosityLevel.PROGRESS.value)):
+                if future is not None:
+                    words, raw = future.result()
+                    future = (pool.submit(forward, batches[bi + 1])
+                              if bi + 1 < len(batches) else None)
                 else:
-                    raise BobcatParseError(
-                        f'<Rust backend batch of {len(batch)} '
-                        f'sentences>') from e
-            for i, parse_tree in zip(batch, parse_trees):
-                if parse_tree is not None:
-                    trees[i] = self._build_ccgtree(parse_tree)
-                elif not suppress_exceptions:
-                    raise BobcatParseError(' '.join(sentences[i]))
+                    words, raw = forward(batch)
+                try:
+                    parse_trees = self.parser.parse_raw(words, *raw)
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except BaseException as e:
+                    # Rust panics derive from BaseException, not Exception
+                    if suppress_exceptions:
+                        parse_trees = [None] * len(batch)
+                    else:
+                        raise BobcatParseError(
+                            f'<Rust backend batch of {len(batch)} '
+                            f'sentences>') from e
+                for i, parse_tree in zip(batch, parse_trees):
+                    if parse_tree is not None:
+                        trees[i] = self._build_ccgtree(parse_tree)
+                    elif not suppress_exceptions:
+                        raise BobcatParseError(' '.join(sentences[i]))
         return trees
 
     @staticmethod
