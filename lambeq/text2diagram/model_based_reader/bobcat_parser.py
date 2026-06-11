@@ -87,6 +87,23 @@ def _parse_tagged_sentence(sent: TaggerOutputSentence) -> CCGTree | None:
         raise BobcatParseError(' '.join(sent.words)) from e
 
 
+def _apply_gpu_tagger_defaults(tagger_config: dict,
+                               device_type: str,
+                               user_set: set[str]) -> None:
+    """Default to fp16 + batch 64 on CUDA devices.
+
+    Applied only when the user did not set the key explicitly and the
+    pipeline config is at its shipped value ('dtype' absent;
+    batch_size == 4).
+    """
+    if device_type != 'cuda':
+        return
+    if 'dtype' not in user_set and tagger_config.get('dtype') is None:
+        tagger_config['dtype'] = 'float16'
+    if 'batch_size' not in user_set and tagger_config.get('batch_size') == 4:
+        tagger_config['batch_size'] = 64
+
+
 class BobcatParser(ModelBasedReader, CCGParser):
     """CCG parser using Bobcat as the backend."""
 
@@ -119,6 +136,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
             - For Apple Silicon (MPS), use `'mps'`.
             - You may also pass a :py:class:`torch.device` object.
             - For other devices, refer to the PyTorch documentation.
+            On CUDA devices the tagger defaults change to
+            `dtype='float16'` and `batch_size=64` unless these are
+            passed explicitly.
         cache_dir : str or os.PathLike, optional
             The directory to which a downloaded pre-trained model should
             be cached instead of the standard cache
@@ -219,6 +239,8 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if parser_backend not in ('auto', 'rust', 'python'):
             raise ValueError(f'Invalid `parser_backend`: {parser_backend!r}')
 
+        user_set = {k for k in ('dtype', 'batch_size') if k in kwargs}
+
         with open(self.model_dir / 'pipeline_config.json') as f:
             config = json.load(f)
         for subconfig in config.values():
@@ -236,6 +258,10 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if kwargs:
             raise TypeError('BobcatParser got unexpected keyword argument(s): '
                             f'{", ".join(map(repr, kwargs))}')
+
+        _apply_gpu_tagger_defaults(config['tagger'],
+                                   torch.device(self.device).type,
+                                   user_set)
 
         model = (BertForChartClassification
                  .from_pretrained(self.model_dir)

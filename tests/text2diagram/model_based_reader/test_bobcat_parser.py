@@ -370,3 +370,29 @@ def test_rust_backend_matches_python(bobcat_parser):
         assert tree.biclosed_type == CCGType.NOUN_PHRASE
     finally:
         rust_parser.parser.set_root_cats(None)
+
+
+def test_gpu_tagger_defaults_helper():
+    from lambeq.text2diagram.model_based_reader.bobcat_parser import (
+        _apply_gpu_tagger_defaults)
+    # CUDA, nothing user-set, shipped config: both defaults apply
+    config = {'batch_size': 4}
+    _apply_gpu_tagger_defaults(config, 'cuda', set())
+    assert config == {'batch_size': 64, 'dtype': 'float16'}
+    # explicit user settings always win
+    config = {'batch_size': 4, 'dtype': 'bfloat16'}
+    _apply_gpu_tagger_defaults(config, 'cuda', {'batch_size', 'dtype'})
+    assert config == {'batch_size': 4, 'dtype': 'bfloat16'}
+    # non-shipped pipeline batch_size is respected
+    config = {'batch_size': 32}
+    _apply_gpu_tagger_defaults(config, 'cuda', set())
+    assert config['batch_size'] == 32 and config['dtype'] == 'float16'
+    # CPU: untouched
+    config = {'batch_size': 4}
+    _apply_gpu_tagger_defaults(config, 'cpu', set())
+    assert config == {'batch_size': 4}
+
+
+def test_cpu_parser_keeps_classic_defaults(bobcat_parser):
+    assert bobcat_parser.tagger.dtype is None
+    assert bobcat_parser.tagger.batch_size == 4
