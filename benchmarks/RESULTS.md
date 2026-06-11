@@ -388,3 +388,36 @@ short-corpus parse_batch line is SLOWER than serial here (0.28s vs
 0.15s): the node was shared and per-sentence work is so small that the
 pool spin-up dominates — consistent with rayon paying off only when
 per-sentence chart work is non-trivial.
+
+## Tier 3 (tagger) — Lab 105 `goosander-l`, RTX 3090 Ti
+
+All runs with auto GPU defaults (fp16, batch 64) unless noted; rust
+backend uses the fused raw-handoff lane via `fused end-to-end`.
+
+Long corpus (187 sentences):
+
+| config                       | fused end-to-end | notes |
+|------------------------------|----------------:|-------|
+| python backend (reference)   | 65.6 sent/s (classic e2e) | chart parsing dominates again on python |
+| rust, fused                  | **475.4 sent/s (0.39s)** | headline |
+| rust + torch.compile (warm)  | 292.7 sent/s | LOSS: dynamic shapes recompile; 26s first-run churn |
+| rust + ONNX (CUDA EP)        | 19.7 sent/s | LOSS: fp32 body + D2H/H2D round trip |
+
+Short corpus (750 sentences): rust fused **1870 sent/s** (0.40s).
+
+Component re-profile (per 64-sentence long batch, fp16):
+model forward 53.7ms; forward_topk total 71.8ms (topk + 91MiB topk
+transfer ~18ms); parse_raw 37.6ms (memcpy + threshold + rayon CKY).
+Serialized cycle ~109ms -> the spec's >15% post-forward share is met,
+so forward/parse pipelining is a justified follow-up (would save up to
+~35%); i16/i32 index narrowing of the 91MiB payload is a smaller one
+(~8%).
+
+Verdicts: torch.compile and ONNX stay opt-in and are NOT recommended on
+this stack (recorded losses above); the wins come from the GPU defaults
+and the fused lane. Corpus gate after Tier 3: 937/937 identical
+(fused rust lane vs python classic lane).
+
+Tier progression on this machine, long corpus end-to-end:
+main 50.9 -> Tier 1 76.2 -> Tier 2 249.1 -> Tier 3 475.4 sent/s (9.3x).
+Short corpus: main 297 -> Tier 3 1870 sent/s (6.3x).
