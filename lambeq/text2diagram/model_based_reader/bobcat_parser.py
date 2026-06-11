@@ -90,18 +90,19 @@ def _parse_tagged_sentence(sent: TaggerOutputSentence) -> CCGTree | None:
 def _apply_gpu_tagger_defaults(tagger_config: dict,
                                device_type: str,
                                user_set: set[str]) -> None:
-    """Default to fp16 + batch 64 on CUDA devices.
+    """Apply per-device tagger defaults (fp16 + batch 64 on CUDA;
+    batch 16 on CPU, the measured sweet spot).
 
     Applied only when the user did not set the key explicitly and the
     pipeline config is at its shipped value ('dtype' absent;
     batch_size == 4).
     """
+    if 'batch_size' not in user_set and tagger_config.get('batch_size') == 4:
+        tagger_config['batch_size'] = 64 if device_type == 'cuda' else 16
     if device_type != 'cuda':
         return
     if 'dtype' not in user_set and tagger_config.get('dtype') is None:
         tagger_config['dtype'] = 'float16'
-    if 'batch_size' not in user_set and tagger_config.get('batch_size') == 4:
-        tagger_config['batch_size'] = 64
 
 
 class BobcatParser(ModelBasedReader, CCGParser):

@@ -387,15 +387,18 @@ def test_gpu_tagger_defaults_helper():
     config = {'batch_size': 32}
     _apply_gpu_tagger_defaults(config, 'cuda', set())
     assert config['batch_size'] == 32 and config['dtype'] == 'float16'
-    # CPU: untouched
+    # CPU: batch tuned, no dtype change
     config = {'batch_size': 4}
     _apply_gpu_tagger_defaults(config, 'cpu', set())
+    assert config == {'batch_size': 16}
+    config = {'batch_size': 4}
+    _apply_gpu_tagger_defaults(config, 'cpu', {'batch_size'})
     assert config == {'batch_size': 4}
 
 
 def test_cpu_parser_keeps_classic_defaults(bobcat_parser):
     assert bobcat_parser.tagger.dtype is None
-    assert bobcat_parser.tagger.batch_size == 4
+    assert bobcat_parser.tagger.batch_size == 16
 
 
 def test_compile_model_flag(bobcat_parser):
