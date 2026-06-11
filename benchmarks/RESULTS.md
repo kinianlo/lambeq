@@ -431,3 +431,9 @@ slower than the sum of the separately-timed classic stages (e.g. short:
 1.48s fused vs 1.04s classic sum) — the node was shared and the fused
 lane's CPU-side work (rayon parse + transfers) contends with other
 tenants; treat the A40 numbers as lower bounds.
+
+Recorded follow-ups (not implemented): forward/parse pipelining (~35%
+headroom, trigger met); i16/i32 narrowing of the 91MiB topk payload
+(~8%); reusing a single rayon pool across batches instead of rebuilding
+per parse_batch call; ONNX io_binding to remove the D2H/H2D round trip
+if the ONNX lane is ever revisited.

@@ -425,6 +425,12 @@ class Tagger:
         self.tagger_backend = tagger_backend
         self.onnx_session = onnx_session
 
+        if dtype is not None and tagger_backend == 'onnx':
+            import warnings
+            warnings.warn('`dtype` is ignored with the ONNX tagger '
+                          'backend: the exported encoder runs at fp32',
+                          stacklevel=2)
+
     def prepare_inputs(self,
                        inputs: Sequence[Sequence[str]],
                        word_mask: bool = False) -> dict[str, Any]:

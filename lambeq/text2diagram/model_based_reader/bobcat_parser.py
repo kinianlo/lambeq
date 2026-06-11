@@ -165,7 +165,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
             BERT encoder via onnxruntime for potentially faster
             inference; requires `tools/export_onnx.py` to have been run
             first and the `onnxruntime` (or `onnxruntime-gpu`) package
-            to be installed.
+            to be installed. NOTE: the ONNX encoder runs at export
+            precision (fp32); the `dtype` setting (including the
+            automatic fp16 default on CUDA) does not apply to it.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -206,6 +208,8 @@ class BobcatParser(ModelBasedReader, CCGParser):
             forward pass runs under `torch.autocast` with this dtype,
             trading a little numerical precision for speed and memory.
             Use `'bfloat16'` on CPU; on CUDA both usually work.
+            Ignored when `tagger_backend='onnx'` (the exported encoder
+            runs at fp32); a warning is emitted in that case.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
