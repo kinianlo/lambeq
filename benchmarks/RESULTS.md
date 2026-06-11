@@ -437,3 +437,23 @@ headroom, trigger met); i16/i32 narrowing of the 91MiB topk payload
 (~8%); reusing a single rayon pool across batches instead of rebuilding
 per parse_batch call; ONNX io_binding to remove the D2H/H2D round trip
 if the ONNX lane is ever revisited.
+
+## Per-tier progression on MS COCO captions — goosander RTX 3090 Ti
+
+2000 unique val2017 captions (7-29 words, avg 11.3, punctuation
+tokenised), 10 parse failures (0.5%) constant across all tiers.
+Each tier at its best-known recipe; "user e2e" = what sentences2trees
+delivers at that tier.
+
+| tier | recipe | tagging | chart | user e2e |
+|------|--------|--------:|------:|---------:|
+| main (default)   | batch 4, fp32           |  352.6 | 294.1 | **160.3** |
+| main (tuned)     | batch 32                |  664.6 | 287.6 | 200.7 |
+| Tier 1           | batch 128 + fp16 + n_jobs=-1 | 681.6 | 294.7 (serial) | **484.2** |
+| Tier 2           | batch 128 + fp16 + rust | 1832.9 | 4220.9 serial / 8074.6 rayon | **1226.3** |
+| Tier 3           | auto defaults + fused   | 1646.6 | 4175.8 serial / 7929.6 rayon | **1467.5** |
+
+Progression: 160 -> 484 -> 1226 -> 1468 sent/s = **9.2x end-to-end**
+on real captions (3.0x from Tier 1's ceiling). Tier 2's jump comes from
+the chart parser (294 -> 8075 sent/s); Tier 3's from removing the
+Python post-processing between the stages.
