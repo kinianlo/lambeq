@@ -51,6 +51,7 @@ def main() -> None:
                       help='pass compile_model=True to BobcatParser')
     argp.add_argument('--tagger-backend', default=None,
                       help='tagger backend to use (e.g. "torch")')
+    argp.add_argument('--model-dir', default=None)
     args = argp.parse_args()
 
     with open(args.sentence_file) as f:
@@ -71,14 +72,16 @@ def main() -> None:
     if args.tagger_backend is not None:
         kwargs['tagger_backend'] = args.tagger_backend
 
-    parser = BobcatParser(device=args.device,
+    parser = BobcatParser(model_name_or_path=args.model_dir or 'bobcat',
+                          device=args.device,
                           verbose=VerbosityLevel.SUPPRESS.value,
                           **kwargs)
 
     cuda = torch.device(args.device).type == 'cuda'
 
     # warm-up: initialise lazy state (e.g. CUDA kernels)
-    parser.sentences2trees([['Alice', 'likes', 'Bob']], tokenised=True)
+    parser.sentences2trees([['Alice', 'likes', 'Bob']], tokenised=True,
+                           suppress_exceptions=True)
     if cuda:
         torch.cuda.reset_peak_memory_stats()
 
