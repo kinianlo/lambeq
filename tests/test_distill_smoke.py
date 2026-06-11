@@ -48,3 +48,23 @@ def test_distill_pipeline_smoke(tmp_path):
                     '--device', 'cpu', '--max-steps', '7',
                     '--token-budget', '64', '--checkpoint-every', '2'],
                    check=True)
+
+
+def test_prune_width_smoke(tmp_path):
+    student = tmp_path / 'student2'
+    subprocess.run([sys.executable, 'tools/distill/make_student.py',
+                    str(TEACHER), str(student), '--layers', '2'],
+                   check=True)
+    pruned = tmp_path / 'pruned'
+    subprocess.run([sys.executable, 'tools/distill/prune_width.py',
+                    str(student), str(pruned),
+                    '--heads-removed', '4', '--ffn-keep', '2048'],
+                   check=True)
+    from lambeq.bobcat import BertForChartClassification
+    model = BertForChartClassification.from_pretrained(pruned)
+    assert model.config.intermediate_size == 2048
+    import torch
+    out = model(input_ids=torch.ones(2, 6, dtype=torch.long),
+                attention_mask=torch.ones(2, 6, dtype=torch.long),
+                token_type_ids=torch.zeros(2, 6, dtype=torch.long))
+    assert out.tag_logits.shape[-1] == model.config.num_tags
