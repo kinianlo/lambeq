@@ -530,3 +530,15 @@ which prevent the background forward from overlapping anything but the
 GIL-released Rust parse. Closing the rest needs GIL-free tokenization
 or process-based prefetch — not worth it. Kept: free, gated, no
 regressions on any corpus/device.
+
+Teacher-width variant (all 30 layers, -4 heads/layer, FFN/2 -> 255.6M
+params, recovery-distilled): agreement 74.1% (best of all compressed
+variants), long 540.6 sent/s / COCO 1631 fused (3090 Ti) — sits between
+the exact teacher and student12 on both axes. Key finding: the
+agreement frontier SATURATES at 64-74% across 79M-255M params — the
+remaining disagreement is tie-break sensitivity, not capacity.
+
+A40 pipelining A/B (shared node): COCO -2%, long -11% (heavy variance)
+— the prefetch thread loses to CPU contention. Cross-device: +8.6%
+(idle Pascal), +2-6% (idle 3090 Ti), <=0 (shared A40). Verdict: revert
+(see cleanup below); this record is the lesson.
