@@ -80,3 +80,37 @@ def test_to_fast_diagram_equivalent(bobcat_trees):
     for t in bobcat_trees:
         assert (convert.to_grammar(t.to_fast_diagram())
                 == t.to_diagram())
+
+
+# ---------------------------------------------------------------------------
+# Edge-case round-trip regression tests
+# ---------------------------------------------------------------------------
+
+def test_swap_round_trip():
+    n, s = grammar.Ty('n'), grammar.Ty('s')
+    d = grammar.Swap(n, s).to_diagram()
+    assert convert.to_grammar(convert.to_fast(d)) == d
+
+
+def test_unequal_leg_spider_round_trip():
+    n = grammar.Ty('n')
+    d = grammar.Spider(n, 2, 3).to_diagram()
+    assert convert.to_grammar(convert.to_fast(d)) == d
+
+
+def test_z_rotated_box_round_trip():
+    n = grammar.Ty('n')
+    # rotate(1) sets z=1 and shifts dom/cod winding numbers
+    d = grammar.Box('f', n, n).rotate(1).to_diagram()
+    rt = convert.to_grammar(convert.to_fast(d))
+    assert rt == d
+    # verify z is preserved, not silently dropped
+    assert rt.layers[0].box.z == 1
+
+
+def test_daggered_cup_round_trip():
+    n = grammar.Ty('n')
+    # Cup(n, n.r).dagger() returns Cap(n, n.r, is_reversed=True) with z=1
+    d = grammar.Cup(n, n.r).dagger().to_diagram()
+    rt = convert.to_grammar(convert.to_fast(d))
+    assert rt == d

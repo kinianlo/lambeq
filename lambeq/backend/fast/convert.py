@@ -16,8 +16,8 @@
 from __future__ import annotations
 
 from lambeq.backend import grammar
-from lambeq.backend.fast.diagram import (CAP, CUP, FBox, FDiagram, SPIDER,
-                                         SWAP, WORD)
+from lambeq.backend.fast.diagram import (CAP, CUP, FBox, FDiagram, PLAIN,
+                                         SPIDER, SWAP, WORD)
 from lambeq.backend.fast.types import (atom, atom_name, atom_z, FTy)
 
 
@@ -87,7 +87,7 @@ def box_to_fast(box: grammar.Box) -> FBox:
     elif isinstance(box, grammar.Word):
         kind = WORD
     else:
-        kind = 0  # PLAIN
+        kind = PLAIN
 
     return FBox(box.name,
                 ty_to_fast(box.dom),
@@ -124,6 +124,8 @@ def box_to_grammar(fbox: FBox) -> grammar.Box:
                            ty_to_grammar(f_dom[1:]))
     elif kind == SPIDER:
         atoms = f_dom.atoms or f_cod.atoms
+        if not atoms:
+            raise ValueError('cannot convert a spider with no legs')
         typ = ty_to_grammar(FTy((atoms[0],)))
         box = grammar.Spider(typ, len(f_dom), len(f_cod))
     elif kind == WORD:
@@ -150,7 +152,14 @@ def to_fast(d: grammar.Diagram) -> FDiagram:
 
 
 def to_grammar(d: FDiagram) -> grammar.Diagram:
-    """Convert an :class:`FDiagram` back to a grammar diagram."""
+    """Convert an :class:`FDiagram` back to a grammar diagram.
+
+    Note: PLAIN and WORD boxes are rebuilt as plain ``grammar.Box`` /
+    ``grammar.Word`` objects — the original ``.data`` / payload is NOT
+    restored.  The round trip is therefore lossless for grammar-category
+    diagrams only; tensor pipelines should read :class:`FBox` payloads
+    directly rather than converting back to grammar.
+    """
     frontier = list(d.dom.atoms)
     layers = []
     for fbox, off in d.terms:
