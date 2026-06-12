@@ -16,6 +16,14 @@
 from lambeq.backend.fast.types import atom, atom_name, atom_z, FTy
 from lambeq.backend.fast.validate import (no_validation, set_validation,
                                           validation, validation_enabled)
+from lambeq.backend.fast.diagram import (
+    CAP, CUP, PLAIN, SPIDER, SWAP, WORD,
+    FBox, FDiagram,
+    cap, caps, cup, cups, spider, swap, word,
+)
 
 __all__ = ['atom', 'atom_name', 'atom_z', 'FTy', 'no_validation',
-           'set_validation', 'validation', 'validation_enabled']
+           'set_validation', 'validation', 'validation_enabled',
+           'CAP', 'CUP', 'PLAIN', 'SPIDER', 'SWAP', 'WORD',
+           'FBox', 'FDiagram',
+           'cap', 'caps', 'cup', 'cups', 'spider', 'swap', 'word']
