@@ -21,9 +21,11 @@ from lambeq.backend.fast.diagram import (
     FBox, FDiagram,
     cap, caps, cup, cups, spider, swap, word,
 )
+from lambeq.backend.fast import convert
 
 __all__ = ['atom', 'atom_name', 'atom_z', 'FTy', 'no_validation',
            'set_validation', 'validation', 'validation_enabled',
            'CAP', 'CUP', 'PLAIN', 'SPIDER', 'SWAP', 'WORD',
            'FBox', 'FDiagram',
-           'cap', 'caps', 'cup', 'cups', 'spider', 'swap', 'word']
+           'cap', 'caps', 'cup', 'cups', 'spider', 'swap', 'word',
+           'convert']

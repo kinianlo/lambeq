@@ -446,6 +446,15 @@ class CCGTree:
         words, grammar = self._resolved()._to_diagram(planar)
         return words >> grammar
 
+    def to_fast_diagram(self):
+        """Convert tree to a fast-core ``FDiagram``.
+
+        This v1 implementation routes through :meth:`to_diagram` and the
+        fast/grammar converter; direct recursion is a later optimisation.
+        """
+        from lambeq.backend.fast import convert
+        return convert.to_fast(self.to_diagram())
+
     def _to_diagram(self, planar: bool = False) -> tuple[Diagram, Diagram]:
         if self.rule == CCGRule.LEXICAL:
             if self.biclosed_type == CCGType.PUNCTUATION:
