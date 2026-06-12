@@ -520,3 +520,13 @@ forward dominates and this UNDERSTATES the gain): COCO 216.2 -> 234.8
 sent/s (+8.6%, 2 reps each, clean separation); long corpus ~0 (parse
 share <7% of the cycle on this card). 3090 Ti long-corpus measurement
 (expected ~+35% from the component profile) pending lab-pool return.
+
+Pipelining follow-up on `eider-l` (RTX 3090 Ti, 2 reps/config): gate
+937/937 identical through the pipelined path; long corpus 473 -> 502
+sent/s (+6.0%), COCO 1483 -> 1517 (+2.3%). The component-profile
+prediction (~35%) was WRONG: it ignored GIL serialization of the
+Python slices (tokenization, tensor conversion, CCGTree building),
+which prevent the background forward from overlapping anything but the
+GIL-released Rust parse. Closing the rest needs GIL-free tokenization
+or process-based prefetch — not worth it. Kept: free, gated, no
+regressions on any corpus/device.
