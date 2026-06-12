@@ -24,7 +24,6 @@ from __future__ import annotations
 __all__ = ['BobcatParser', 'BobcatParseError']
 
 from collections.abc import Iterable
-import concurrent.futures
 import json
 import multiprocessing
 import os
@@ -117,8 +116,6 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  force_download: bool = False,
                  verbose: str = VerbosityLevel.PROGRESS.value,
                  parser_backend: str = 'auto',
-                 compile_model: bool = False,
-                 tagger_backend: str = 'torch',
                  **kwargs: Any) -> None:
         """Instantiate a BobcatParser.
 
@@ -158,18 +155,6 @@ class BobcatParser(ModelBasedReader, CCGParser):
             the pure-Python parser; 'rust' requires the extension;
             'python' forces the pure-Python parser. The environment
             variable LAMBEQ_BOBCAT_BACKEND overrides 'auto'.
-        compile_model : bool, default: False
-            Wrap the BERT encoder with `torch.compile(dynamic=True)`.
-            The first forward pass pays a significant compilation
-            latency; worth it for corpus-scale runs.
-        tagger_backend : {'torch', 'onnx'}, default: 'torch'
-            Which backend to use for the tagger encoder. 'onnx' runs the
-            BERT encoder via onnxruntime for potentially faster
-            inference; requires `tools/export_onnx.py` to have been run
-            first and the `onnxruntime` (or `onnxruntime-gpu`) package
-            to be installed. NOTE: the ONNX encoder runs at export
-            precision (fp32); the `dtype` setting (including the
-            automatic fp16 default on CUDA) does not apply to it.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -210,8 +195,6 @@ class BobcatParser(ModelBasedReader, CCGParser):
             forward pass runs under `torch.autocast` with this dtype,
             trading a little numerical precision for speed and memory.
             Use `'bfloat16'` on CPU; on CUDA both usually work.
-            Ignored when `tagger_backend='onnx'` (the exported encoder
-            runs at fp32); a warning is emitted in that case.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
@@ -244,15 +227,11 @@ class BobcatParser(ModelBasedReader, CCGParser):
         # Initialise model
         self._initialise_model(root_cats=root_cats,
                                parser_backend=parser_backend,
-                               compile_model=compile_model,
-                               tagger_backend=tagger_backend,
                                **kwargs)
 
     def _initialise_model(self,
                           root_cats: Iterable[str] | None = None,
                           parser_backend: str = 'auto',
-                          compile_model: bool = False,
-                          tagger_backend: str = 'torch',
                           **kwargs) -> None:
         """Initialise the model and load it into the appropriate device.
 
@@ -260,12 +239,6 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         if parser_backend not in ('auto', 'rust', 'python'):
             raise ValueError(f'Invalid `parser_backend`: {parser_backend!r}')
-
-        if not isinstance(compile_model, bool):
-            raise ValueError(f'Invalid `compile_model`: {compile_model}')
-
-        if tagger_backend not in ('torch', 'onnx'):
-            raise ValueError(f'Invalid `tagger_backend`: {tagger_backend!r}')
 
         user_set = {k for k in ('dtype', 'batch_size') if k in kwargs}
 
@@ -297,32 +270,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  .to(self.device))
         tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
 
-        if compile_model:
-            model.bert = torch.compile(model.bert, dynamic=True)
-
-        onnx_session = None
-        if tagger_backend == 'onnx':
-            try:
-                import onnxruntime
-            except ImportError as e:
-                raise ImportError(
-                    "tagger_backend='onnx' requires onnxruntime; pip "
-                    'install onnxruntime (or onnxruntime-gpu)') from e
-            onnx_path = self.model_dir / 'bobcat-body.onnx'
-            if not onnx_path.exists():
-                raise FileNotFoundError(
-                    f'{onnx_path} not found; run tools/export_onnx.py '
-                    'first')
-            providers = (['CUDAExecutionProvider', 'CPUExecutionProvider']
-                         if torch.device(self.device).type == 'cuda'
-                         else ['CPUExecutionProvider'])
-            onnx_session = onnxruntime.InferenceSession(
-                str(onnx_path), providers=providers)
-
-        self.tagger = Tagger(model, tokenizer,
-                             tagger_backend=tagger_backend,
-                             onnx_session=onnx_session,
-                             **config['tagger'])
+        self.tagger = Tagger(model, tokenizer, **config['tagger'])
 
         if parser_backend == 'auto':
             parser_backend = os.environ.get('LAMBEQ_BOBCAT_BACKEND', 'auto')
@@ -484,55 +432,34 @@ class BobcatParser(ModelBasedReader, CCGParser):
                      sentences: list[list[str]],
                      suppress_exceptions: bool,
                      verbose: str) -> list[CCGTree]:
-        """Tag and parse via the fused raw-tensor Rust lane.
-
-        On CUDA devices, the model forward for batch k+1 runs on a
-        background thread while the Rust parse of batch k runs on the
-        CPU: `parse_batch_raw` releases the GIL and copies its inputs,
-        and at most one forward is ever in flight, so the one-deep
-        prefetch is safe. On CPU the stages share the same cores, so
-        the loop stays sequential.
-        """
+        """Tag and parse via the fused raw-tensor Rust lane."""
         tagger = self.tagger
         trees: list[CCGTree | None] = [None] * len(sentences)
         batches = tagger.make_batches(sentences, tagger.batch_size)
-        prefetch = tagger.model.device.type == 'cuda'
-
-        def forward(batch: list[int]) -> tuple[list[list[str]], tuple]:
+        for batch in tqdm(
+                batches,
+                desc='Parsing sentences',
+                leave=False,
+                disable=verbose != VerbosityLevel.PROGRESS.value):
             words = [list(sentences[i]) for i in batch]
-            return words, tagger.forward_topk(words)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = (pool.submit(forward, batches[0])
-                      if prefetch and batches else None)
-            for bi, batch in enumerate(tqdm(
-                    batches,
-                    desc='Parsing sentences',
-                    leave=False,
-                    disable=verbose != VerbosityLevel.PROGRESS.value)):
-                if future is not None:
-                    words, raw = future.result()
-                    future = (pool.submit(forward, batches[bi + 1])
-                              if bi + 1 < len(batches) else None)
+            raw = tagger.forward_topk(words)
+            try:
+                parse_trees = self.parser.parse_raw(words, *raw)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                # Rust panics derive from BaseException, not Exception
+                if suppress_exceptions:
+                    parse_trees = [None] * len(batch)
                 else:
-                    words, raw = forward(batch)
-                try:
-                    parse_trees = self.parser.parse_raw(words, *raw)
-                except (KeyboardInterrupt, SystemExit):
-                    raise
-                except BaseException as e:
-                    # Rust panics derive from BaseException, not Exception
-                    if suppress_exceptions:
-                        parse_trees = [None] * len(batch)
-                    else:
-                        raise BobcatParseError(
-                            f'<Rust backend batch of {len(batch)} '
-                            f'sentences>') from e
-                for i, parse_tree in zip(batch, parse_trees):
-                    if parse_tree is not None:
-                        trees[i] = self._build_ccgtree(parse_tree)
-                    elif not suppress_exceptions:
-                        raise BobcatParseError(' '.join(sentences[i]))
+                    raise BobcatParseError(
+                        f'<Rust backend batch of {len(batch)} '
+                        f'sentences>') from e
+            for i, parse_tree in zip(batch, parse_trees):
+                if parse_tree is not None:
+                    trees[i] = self._build_ccgtree(parse_tree)
+                elif not suppress_exceptions:
+                    raise BobcatParseError(' '.join(sentences[i]))
         return trees
 
     @staticmethod

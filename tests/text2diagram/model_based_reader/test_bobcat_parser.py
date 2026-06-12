@@ -399,36 +399,3 @@ def test_gpu_tagger_defaults_helper():
 def test_cpu_parser_keeps_classic_defaults(bobcat_parser):
     assert bobcat_parser.tagger.dtype is None
     assert bobcat_parser.tagger.batch_size == 16
-
-
-def test_compile_model_flag(bobcat_parser):
-    with pytest.raises(ValueError):
-        BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
-                     compile_model='yes')
-    compiled = BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
-                            compile_model=True)
-    assert type(compiled.tagger.model.bert).__name__ == 'OptimizedModule'
-
-
-def test_invalid_tagger_backend():
-    with pytest.raises(ValueError):
-        BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
-                     tagger_backend='tensorflow')
-
-
-def test_onnx_tagger_matches_torch(bobcat_parser):
-    onnxruntime = pytest.importorskip('onnxruntime')
-    import pathlib
-    import subprocess
-    import sys
-    model_dir = pathlib.Path.home() / '.cache/lambeq/bobcat/bobcat'
-    if not (model_dir / 'bobcat-body.onnx').exists():
-        subprocess.run([sys.executable, 'tools/export_onnx.py'],
-                       check=True)
-    onnx_parser = BobcatParser(verbose=VerbosityLevel.SUPPRESS.value,
-                               tagger_backend='onnx')
-    sentences = ['Alice likes Bob', 'I do not like Bob']
-    assert (onnx_parser.sentences2trees(
-                sentences, verbose=VerbosityLevel.SUPPRESS.value)
-            == bobcat_parser.sentences2trees(
-                sentences, verbose=VerbosityLevel.SUPPRESS.value))

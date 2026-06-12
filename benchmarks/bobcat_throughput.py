@@ -47,10 +47,6 @@ def main() -> None:
                       help="e.g. 'float16' or 'bfloat16'")
     argp.add_argument('--n-jobs', type=int, default=1)
     argp.add_argument('--parser-backend', default=None)
-    argp.add_argument('--compile-model', action='store_true',
-                      help='pass compile_model=True to BobcatParser')
-    argp.add_argument('--tagger-backend', default=None,
-                      help='tagger backend to use (e.g. "torch")')
     argp.add_argument('--model-dir', default=None)
     args = argp.parse_args()
 
@@ -67,10 +63,6 @@ def main() -> None:
         kwargs['dtype'] = args.dtype
     if args.parser_backend is not None:
         kwargs['parser_backend'] = args.parser_backend
-    if args.compile_model:
-        kwargs['compile_model'] = True
-    if args.tagger_backend is not None:
-        kwargs['tagger_backend'] = args.tagger_backend
 
     parser = BobcatParser(model_name_or_path=args.model_dir or 'bobcat',
                           device=args.device,
@@ -112,8 +104,7 @@ def main() -> None:
     # getattr guards: this script is also run against older checkouts
     # of lambeq/ (per-tier comparisons) that predate these attributes
     print(f'tagger: batch_size={parser.tagger.batch_size} '
-          f"dtype={getattr(parser.tagger, 'dtype', None)} "
-          f"backend={getattr(parser.tagger, 'tagger_backend', 'torch')}")
+          f"dtype={getattr(parser.tagger, 'dtype', None)}")
     print(f'config:           {kwargs} device={args.device}')
     print(f'sentences:        {n} ({failures} failed)')
     print(f'tagging:          {tag_time:.2f}s ({rate(n, tag_time)})')

@@ -367,9 +367,7 @@ class Tagger:
                  span_prob_threshold: float = 1,
                  span_prob_threshold_strategy: str = 'relative',
                  max_spans_per_batch: int | None = None,
-                 dtype: str | None = None,
-                 tagger_backend: str = 'torch',
-                 onnx_session: Any = None) -> None:
+                 dtype: str | None = None) -> None:
         strategies = ('absolute', 'relative')
 
         if not (batch_size >= 1 and batch_size == int(batch_size)):
@@ -401,15 +399,6 @@ class Tagger:
         if dtype is not None and dtype not in ('float16', 'bfloat16'):
             raise ValueError(f'Invalid `dtype`: {dtype}')
 
-        if tagger_backend not in ('torch', 'onnx'):
-            raise ValueError(f'Invalid `tagger_backend`: {tagger_backend!r}')
-
-        if tagger_backend == 'onnx' and onnx_session is None:
-            raise ValueError(
-                "tagger_backend='onnx' requires an onnx_session; "
-                'use BobcatParser(tagger_backend="onnx") to build one '
-                'automatically, or pass onnx_session explicitly')
-
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size = int(batch_size)
@@ -422,14 +411,6 @@ class Tagger:
         self.max_spans_per_batch = (None if max_spans_per_batch is None
                                     else int(max_spans_per_batch))
         self.dtype = dtype
-        self.tagger_backend = tagger_backend
-        self.onnx_session = onnx_session
-
-        if dtype is not None and tagger_backend == 'onnx':
-            import warnings
-            warnings.warn('`dtype` is ignored with the ONNX tagger '
-                          'backend: the exported encoder runs at fp32',
-                          stacklevel=2)
 
     def prepare_inputs(self,
                        inputs: Sequence[Sequence[str]],
@@ -453,22 +434,6 @@ class Tagger:
     def _model_output(self,
                       encodings: dict[str, Any]) -> ChartClassifierOutput:
         """Run the model forward pass under the configured autocast."""
-        if self.tagger_backend == 'onnx':
-            import numpy as np
-            ort_inputs = {k: np.asarray(encodings[k], dtype=np.int64)
-                          for k in ('input_ids', 'attention_mask',
-                                    'token_type_ids')}
-            (hidden,) = self.onnx_session.run(['last_hidden_state'],
-                                              ort_inputs)
-            sequence_output = torch.from_numpy(hidden).to(
-                self.model.device)
-            word_mask = torch.as_tensor(encodings['word_mask'],
-                                        device=self.model.device)
-            tag_logits, span_logits = self.model.classify(
-                sequence_output, word_mask)
-            return ChartClassifierOutput(tag_logits=tag_logits,
-                                         span_logits=span_logits)
-
         if self.dtype is None:
             autocast = contextlib.nullcontext()
         else:
