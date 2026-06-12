@@ -25,8 +25,11 @@ __all__ = ['BobcatParser', 'BobcatParseError']
 
 from collections.abc import Iterable
 import json
+import multiprocessing
+import os
 import sys
 from typing import Any
+import warnings
 
 import torch
 from tqdm.auto import tqdm
@@ -35,6 +38,7 @@ from transformers import AutoTokenizer
 from lambeq.bobcat import (BertForChartClassification, Category,
                            ChartParser, Grammar, ParseTree,
                            Sentence, Supertag, Tagger)
+from lambeq.bobcat.rust_backend import RustBackend
 from lambeq.bobcat.tagger import TaggerOutputSentence
 from lambeq.core.globals import VerbosityLevel
 from lambeq.core.utils import SentenceBatchType
@@ -54,6 +58,53 @@ class BobcatParseError(Exception):
         return f'Bobcat failed to parse {self.sentence!r}.'
 
 
+# Worker state for parallel chart parsing. The workers must stay
+# pure-Python and never touch torch/CUDA: under the fork start method
+# they inherit the parent's CUDA context, which must not be used.
+_worker_parser: ChartParser | None = None
+_worker_tags: list[str] | None = None
+_worker_suppress_exceptions = False
+
+
+def _init_worker(parser: ChartParser,
+                 tags: list[str],
+                 suppress_exceptions: bool) -> None:
+    global _worker_parser, _worker_tags, _worker_suppress_exceptions
+    _worker_parser = parser
+    _worker_tags = tags
+    _worker_suppress_exceptions = suppress_exceptions
+
+
+def _parse_tagged_sentence(sent: TaggerOutputSentence) -> CCGTree | None:
+    assert _worker_parser is not None and _worker_tags is not None
+    try:
+        sentence_input = BobcatParser._prepare_sentence(sent, _worker_tags)
+        result = _worker_parser(sentence_input)
+        return BobcatParser._build_ccgtree(result[0])
+    except Exception as e:
+        if _worker_suppress_exceptions:
+            return None
+        raise BobcatParseError(' '.join(sent.words)) from e
+
+
+def _apply_gpu_tagger_defaults(tagger_config: dict,
+                               device_type: str,
+                               user_set: set[str]) -> None:
+    """Apply per-device tagger defaults (fp16 + batch 64 on CUDA;
+    batch 16 on CPU, the measured sweet spot).
+
+    Applied only when the user did not set the key explicitly and the
+    pipeline config is at its shipped value ('dtype' absent;
+    batch_size == 4).
+    """
+    if 'batch_size' not in user_set and tagger_config.get('batch_size') == 4:
+        tagger_config['batch_size'] = 64 if device_type == 'cuda' else 16
+    if device_type != 'cuda':
+        return
+    if 'dtype' not in user_set and tagger_config.get('dtype') is None:
+        tagger_config['dtype'] = 'float16'
+
+
 class BobcatParser(ModelBasedReader, CCGParser):
     """CCG parser using Bobcat as the backend."""
 
@@ -64,6 +115,7 @@ class BobcatParser(ModelBasedReader, CCGParser):
                  cache_dir: StrPathT | None = None,
                  force_download: bool = False,
                  verbose: str = VerbosityLevel.PROGRESS.value,
+                 parser_backend: str = 'auto',
                  **kwargs: Any) -> None:
         """Instantiate a BobcatParser.
 
@@ -85,6 +137,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
             - For Apple Silicon (MPS), use `'mps'`.
             - You may also pass a :py:class:`torch.device` object.
             - For other devices, refer to the PyTorch documentation.
+            On CUDA devices the tagger defaults change to
+            `dtype='float16'` and `batch_size=64` unless these are
+            passed explicitly.
         cache_dir : str or os.PathLike, optional
             The directory to which a downloaded pre-trained model should
             be cached instead of the standard cache
@@ -94,6 +149,12 @@ class BobcatParser(ModelBasedReader, CCGParser):
             available locally.
         verbose : str, default: 'progress',
             See :py:class:`VerbosityLevel` for options.
+        parser_backend : {'auto', 'rust', 'python'}, default: 'auto'
+            Which chart-parser implementation to use. 'auto' uses the
+            bobcat_rs Rust extension when importable and falls back to
+            the pure-Python parser; 'rust' requires the extension;
+            'python' forces the pure-Python parser. The environment
+            variable LAMBEQ_BOBCAT_BACKEND overrides 'auto'.
         **kwargs : dict, optional
             Additional keyword arguments to be passed to the underlying
             parsers (see Other Parameters). By default, they are set to
@@ -124,6 +185,16 @@ class BobcatParser(ModelBasedReader, CCGParser):
             If "relative", the probablity threshold is relative to the
             highest scoring entry. Otherwise, the probability is an
             absolute threshold.
+        max_spans_per_batch : int, optional
+            If set, overrides `batch_size`: each batch contains as many
+            sentences as fit in this padded span count, capping memory
+            usage per batch. A single sentence exceeding the budget on
+            its own still forms its own batch.
+        dtype : str, optional
+            If set (e.g. `'float16'` or `'bfloat16'`), the tagger
+            forward pass runs under `torch.autocast` with this dtype,
+            trading a little numerical precision for speed and memory.
+            Use `'bfloat16'` on CPU; on CUDA both usually work.
 
         Chart parser parameters:
         eisner_normal_form : bool, default: True
@@ -155,14 +226,21 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         # Initialise model
         self._initialise_model(root_cats=root_cats,
+                               parser_backend=parser_backend,
                                **kwargs)
 
     def _initialise_model(self,
                           root_cats: Iterable[str] | None = None,
+                          parser_backend: str = 'auto',
                           **kwargs) -> None:
         """Initialise the model and load it into the appropriate device.
 
         Also handle required miscellaneous initialisation steps here."""
+
+        if parser_backend not in ('auto', 'rust', 'python'):
+            raise ValueError(f'Invalid `parser_backend`: {parser_backend!r}')
+
+        user_set = {k for k in ('dtype', 'batch_size') if k in kwargs}
 
         with open(self.model_dir / 'pipeline_config.json') as f:
             config = json.load(f)
@@ -173,9 +251,18 @@ class BobcatParser(ModelBasedReader, CCGParser):
                 except KeyError:
                     pass
 
+        # parameters that postdate the shipped pipeline_config.json
+        for key in ('max_spans_per_batch', 'dtype'):
+            if key in kwargs:
+                config['tagger'][key] = kwargs.pop(key)
+
         if kwargs:
             raise TypeError('BobcatParser got unexpected keyword argument(s): '
                             f'{", ".join(map(repr, kwargs))}')
+
+        _apply_gpu_tagger_defaults(config['tagger'],
+                                   torch.device(self.device).type,
+                                   user_set)
 
         model = (BertForChartClassification
                  .from_pretrained(self.model_dir)
@@ -185,11 +272,39 @@ class BobcatParser(ModelBasedReader, CCGParser):
 
         self.tagger = Tagger(model, tokenizer, **config['tagger'])
 
+        if parser_backend == 'auto':
+            parser_backend = os.environ.get('LAMBEQ_BOBCAT_BACKEND', 'auto')
+            if parser_backend not in ('rust', 'python'):
+                try:
+                    import bobcat_rs  # noqa: F401
+                    parser_backend = 'rust'
+                except ImportError:
+                    parser_backend = 'python'
+        self.parser_backend = parser_backend
+
         grammar = Grammar.load(self.model_dir / 'grammar.json')
-        self.parser = ChartParser(grammar,
-                                  self.tagger.model.config.cats,
-                                  root_cats,
-                                  **config['parser'])
+        if parser_backend == 'rust':
+            try:
+                self.parser = RustBackend(grammar,
+                                         self.tagger.model.config.cats,
+                                         root_cats,
+                                         **config['parser'])
+            except ImportError as e:
+                raise ImportError(
+                    "parser_backend='rust' requires the bobcat_rs "
+                    'extension; build it with `pip install ./rust` '
+                    '(needs a Rust toolchain, see rustup.rs)') from e
+            self.parser.configure_raw(
+                self.tagger.model.config.tags,
+                self.tagger.tag_prob_threshold,
+                self.tagger.tag_prob_threshold_strategy,
+                self.tagger.span_prob_threshold,
+                self.tagger.span_prob_threshold_strategy)
+        else:
+            self.parser = ChartParser(grammar,
+                                      self.tagger.model.config.cats,
+                                      root_cats,
+                                      **config['parser'])
 
     @staticmethod
     def _prepare_sentence(sent: TaggerOutputSentence,
@@ -206,7 +321,8 @@ class BobcatParser(ModelBasedReader, CCGParser):
         sentences: SentenceBatchType,
         tokenised: bool = False,
         suppress_exceptions: bool = False,
-        verbose: str | None = None
+        verbose: str | None = None,
+        n_jobs: int = 1
     ) -> list[CCGTree] | None:
         """Parse multiple sentences into a list of :py:class:`.CCGTree` s.
 
@@ -225,6 +341,13 @@ class BobcatParser(ModelBasedReader, CCGParser):
             See :py:class:`VerbosityLevel` for options. If set, takes
             priority over the :py:attr:`verbose` attribute of the
             parser.
+        n_jobs : int, default: 1
+            The number of processes used for chart parsing the tagged
+            sentences; -1 (the only accepted negative value) uses all
+            available cores. The tagger stage is unaffected. On
+            platforms where multiprocessing starts processes by
+            spawning (e.g. macOS, Windows), the calling script must be
+            guarded by `if __name__ == '__main__':`.
 
         Returns
         -------
@@ -239,6 +362,9 @@ class BobcatParser(ModelBasedReader, CCGParser):
             raise ValueError(f'`{verbose}` is not a valid verbose value for '
                              'BobcatParser.')
 
+        if not (isinstance(n_jobs, int) and (n_jobs == -1 or n_jobs >= 1)):
+            raise ValueError(f'Invalid `n_jobs`: {n_jobs}')
+
         sentences_valid, empty_indices = self.validate_sentence_batch(
             sentences,
             tokenised=tokenised,
@@ -249,29 +375,91 @@ class BobcatParser(ModelBasedReader, CCGParser):
         if sentences_valid:
             if verbose == VerbosityLevel.TEXT.value:
                 print('Tagging sentences.', file=sys.stderr)
-            tag_results = self.tagger(sentences_valid, verbose=verbose)
-            tags = tag_results.tags
-            if verbose == VerbosityLevel.TEXT.value:
-                print('Parsing tagged sentences.', file=sys.stderr)
-            for sent in tqdm(
-                    tag_results.sentences,
-                    desc='Parsing tagged sentences',
-                    leave=False,
-                    disable=verbose != VerbosityLevel.PROGRESS.value):
+            if getattr(self, 'parser_backend', 'python') == 'rust' \
+                    and isinstance(self.parser, RustBackend):
+                if n_jobs != 1:
+                    warnings.warn('`n_jobs` is ignored with the Rust '
+                                  'parser backend; it parallelises '
+                                  'internally', stacklevel=2)
+                if verbose == VerbosityLevel.TEXT.value:
+                    print('Parsing tagged sentences.', file=sys.stderr)
+                trees = self._parse_fused(sentences_valid,
+                                          suppress_exceptions, verbose)
+            else:
+                tag_results = self.tagger(sentences_valid, verbose=verbose)
+                tags = tag_results.tags
+                if verbose == VerbosityLevel.TEXT.value:
+                    print('Parsing tagged sentences.', file=sys.stderr)
+                if n_jobs == 1:
+                    for sent in tqdm(
+                            tag_results.sentences,
+                            desc='Parsing tagged sentences',
+                            leave=False,
+                            disable=verbose != VerbosityLevel.PROGRESS.value):
 
-                try:
-                    sentence_input = self._prepare_sentence(sent, tags)
-                    result = self.parser(sentence_input)
-                    trees.append(self._build_ccgtree(result[0]))
-                except Exception as e:
-                    if suppress_exceptions:
-                        trees.append(None)
-                    else:
-                        raise BobcatParseError(' '.join(sent.words)) from e
+                        try:
+                            sentence_input = self._prepare_sentence(sent, tags)
+                            result = self.parser(sentence_input)
+                            trees.append(self._build_ccgtree(result[0]))
+                        except Exception as e:
+                            if suppress_exceptions:
+                                trees.append(None)
+                            else:
+                                raise BobcatParseError(
+                                    ' '.join(sent.words)) from e
+                else:
+                    processes = os.cpu_count() if n_jobs == -1 else n_jobs
+                    with multiprocessing.Pool(
+                            processes,
+                            initializer=_init_worker,
+                            initargs=(self.parser,
+                                      tags,
+                                      suppress_exceptions)) as pool:
+                        trees = list(tqdm(
+                            pool.imap(_parse_tagged_sentence,
+                                      tag_results.sentences),
+                            desc='Parsing tagged sentences',
+                            total=len(tag_results.sentences),
+                            leave=False,
+                            disable=verbose != VerbosityLevel.PROGRESS.value))
 
         for i in empty_indices:
             trees.insert(i, None)
 
+        return trees
+
+    def _parse_fused(self,
+                     sentences: list[list[str]],
+                     suppress_exceptions: bool,
+                     verbose: str) -> list[CCGTree]:
+        """Tag and parse via the fused raw-tensor Rust lane."""
+        tagger = self.tagger
+        trees: list[CCGTree | None] = [None] * len(sentences)
+        batches = tagger.make_batches(sentences, tagger.batch_size)
+        for batch in tqdm(
+                batches,
+                desc='Parsing sentences',
+                leave=False,
+                disable=verbose != VerbosityLevel.PROGRESS.value):
+            words = [list(sentences[i]) for i in batch]
+            raw = tagger.forward_topk(words)
+            try:
+                parse_trees = self.parser.parse_raw(words, *raw)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except BaseException as e:
+                # Rust panics derive from BaseException, not Exception
+                if suppress_exceptions:
+                    parse_trees = [None] * len(batch)
+                else:
+                    raise BobcatParseError(
+                        f'<Rust backend batch of {len(batch)} '
+                        f'sentences>') from e
+            for i, parse_tree in zip(batch, parse_trees):
+                if parse_tree is not None:
+                    trees[i] = self._build_ccgtree(parse_tree)
+                elif not suppress_exceptions:
+                    raise BobcatParseError(' '.join(sentences[i]))
         return trees
 
     @staticmethod

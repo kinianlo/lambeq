@@ -23,14 +23,15 @@ Apache License 2.0.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 import math
-from typing import Any, List, Tuple
+from typing import Any, cast, List, Tuple
 
 import torch
 from torch import nn
-from tqdm.auto import trange
+from tqdm.auto import tqdm
 from transformers import (BertConfig, BertModel, BertPreTrainedModel,
                           PreTrainedModel, PreTrainedTokenizerFast)
 from transformers.modeling_outputs import ModelOutput
@@ -71,6 +72,77 @@ def idx2span(i: int) -> _SpanT:
 
 def span2idx(x: int, y: int) -> int:
     return chart_size(y + 1) - x - 1
+
+
+def extract_topk(logits: torch.Tensor,
+                 lengths: Sequence[int],
+                 top_k: int,
+                 prob_threshold: float,
+                 strategy: str,
+                 skip_index_0: bool) -> list[list[TagListT]]:
+    """Extract the top entries by log probability for each position.
+
+    Parameters
+    ----------
+    logits : torch.Tensor of shape (batch, positions, classes)
+        The raw logits.
+    lengths : sequence of int
+        The real number of positions per batch entry; positions beyond
+        this are padding and are dropped.
+    top_k : int
+        The maximum number of entries to keep per position. If 0, keep
+        all entries.
+    prob_threshold : float
+        The probability used for the threshold to keep entries.
+    strategy : {'relative', 'absolute'}
+        If "relative", the probability threshold is relative to the
+        highest scoring entry, otherwise it is absolute.
+    skip_index_0 : bool
+        Whether entries for class index 0 should be dropped.
+
+    Returns
+    -------
+    list of list of list of tuple of int and float
+        For each batch entry, for each position, the kept entries as
+        (class index, log probability) tuples.
+
+    """
+    logits = logits.float()  # autocast may produce reduced precision
+    k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
+    scores, indices = logits.log_softmax(-1).topk(k)
+
+    if prob_threshold == 0:
+        mask = torch.ones_like(scores, dtype=torch.bool)
+    elif strategy == 'relative':
+        mask = scores >= scores[..., :1] + math.log(prob_threshold)
+    else:
+        mask = scores >= math.log(prob_threshold)
+    if skip_index_0:
+        mask = mask & (indices != 0)
+
+    # drop padding positions on-device, then transfer only the
+    # surviving entries: materialising the full padded
+    # (batch, positions, k) tensors as Python objects costs time that
+    # grows quadratically with sentence length for the span classifier
+    positions = torch.arange(scores.shape[1], device=scores.device)
+    length_mask = (positions.unsqueeze(0)
+                   < torch.tensor(lengths, device=scores.device)
+                          .unsqueeze(1))
+    mask = mask & length_mask.unsqueeze(-1)
+
+    # row-major order means entries arrive grouped by (sentence,
+    # position), with scores in descending order within each position
+    coords = mask.nonzero().tolist()
+    kept_scores = scores[mask].tolist()
+    kept_indices = indices[mask].tolist()
+
+    output_batch: list[list[TagListT]] = [
+        [[] for _ in range(length)] for length in lengths]
+    for (sent, pos, _), index, score in zip(coords,
+                                            kept_indices,
+                                            kept_scores):
+        output_batch[sent][pos].append((index, score))
+    return output_batch
 
 
 @dataclass
@@ -120,6 +192,34 @@ class BertForChartClassification(BertPreTrainedModel):
 
         self.init_weights()
 
+    def classify(
+        self,
+        sequence_output: torch.Tensor,
+        word_mask: torch.BoolTensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the tag/span heads on encoder output."""
+        if word_mask is not None:
+            # remove ignored tensors and pack remaining ones
+            word_indices = nn.utils.rnn.pad_sequence(
+                [sent_word_mask.nonzero().squeeze(dim=-1)
+                 for sent_word_mask in word_mask],
+                batch_first=True
+            )
+            word_indices = word_indices.unsqueeze(-1).expand(
+                *word_indices.shape, self.config.hidden_size)
+
+            tag_input = sequence_output.gather(-2, word_indices)
+        else:
+            tag_input = sequence_output
+
+        chart_spans = get_chart_spans(tag_input.shape[-2])
+        span_input = tag_input[:, chart_spans].flatten(start_dim=-2)
+
+        tag_logits = self.tag_classifier(self.dropout(tag_input))
+        span_logits = self.span_classifier(self.dropout(span_input))
+
+        return tag_logits, span_logits
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -151,25 +251,7 @@ class BertForChartClassification(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        if word_mask is not None:
-            # remove ignored tensors and pack remaining ones
-            word_indices = nn.utils.rnn.pad_sequence(
-                [sent_word_mask.nonzero().squeeze(dim=-1)
-                 for sent_word_mask in word_mask],
-                batch_first=True
-            )
-            word_indices = word_indices.unsqueeze(-1).expand(
-                *word_indices.shape, self.config.hidden_size)
-
-            tag_input = sequence_output.gather(-2, word_indices)
-        else:
-            tag_input = sequence_output
-
-        chart_spans = get_chart_spans(tag_input.shape[-2])
-        span_input = tag_input[:, chart_spans].flatten(start_dim=-2)
-
-        tag_logits = self.tag_classifier(self.dropout(tag_input))
-        span_logits = self.span_classifier(self.dropout(span_input))
+        tag_logits, span_logits = self.classify(sequence_output, word_mask)
 
         loss = None
         if (tag_labels is not None
@@ -283,7 +365,9 @@ class Tagger:
                  tag_prob_threshold_strategy: str = 'relative',
                  span_top_k: int = 1,
                  span_prob_threshold: float = 1,
-                 span_prob_threshold_strategy: str = 'relative') -> None:
+                 span_prob_threshold_strategy: str = 'relative',
+                 max_spans_per_batch: int | None = None,
+                 dtype: str | None = None) -> None:
         strategies = ('absolute', 'relative')
 
         if not (batch_size >= 1 and batch_size == int(batch_size)):
@@ -306,6 +390,15 @@ class Tagger:
             raise ValueError('Invalid `span_prob_threshold_strategy`: '
                              f'{span_prob_threshold_strategy}')
 
+        if max_spans_per_batch is not None and not (
+                max_spans_per_batch >= 1
+                and max_spans_per_batch == int(max_spans_per_batch)):
+            raise ValueError('Invalid `max_spans_per_batch`: '
+                             f'{max_spans_per_batch}')
+
+        if dtype is not None and dtype not in ('float16', 'bfloat16'):
+            raise ValueError(f'Invalid `dtype`: {dtype}')
+
         self.model = model
         self.tokenizer = tokenizer
         self.batch_size = int(batch_size)
@@ -315,6 +408,9 @@ class Tagger:
         self.span_top_k = int(span_top_k)
         self.span_prob_threshold = span_prob_threshold
         self.span_prob_threshold_strategy = span_prob_threshold_strategy
+        self.max_spans_per_batch = (None if max_spans_per_batch is None
+                                    else int(max_spans_per_batch))
+        self.dtype = dtype
 
     def prepare_inputs(self,
                        inputs: Sequence[Sequence[str]],
@@ -335,54 +431,41 @@ class Tagger:
 
         return encodings
 
+    def _model_output(self,
+                      encodings: dict[str, Any]) -> ChartClassifierOutput:
+        """Run the model forward pass under the configured autocast."""
+        if self.dtype is None:
+            autocast = contextlib.nullcontext()
+        else:
+            autocast = torch.autocast(device_type=self.model.device.type,
+                                      dtype=getattr(torch, self.dtype))
+        with autocast:
+            return self.model(
+                **{k: torch.as_tensor(v, device=self.model.device)
+                   for k, v in encodings.items()})
+
+    @torch.inference_mode()
     def parse(self,
               inputs: Sequence[Sequence[str]]) -> list[TaggerOutputSentence]:
         """Parse a batch of sentences."""
         encodings = self.prepare_inputs(inputs, word_mask=True)
-        outputs = self.model(**{k: torch.as_tensor(v, device=self.model.device)
-                                for k, v in encodings.items()})
-
-        tag_output: list[list[TagListT]] = []
-        span_output: list[list[TagListT]] = []
+        outputs = self._model_output(encodings)
 
         tag_lengths = [len(sentence) for sentence in inputs]
         span_lengths = [chart_size(length) for length in tag_lengths]
 
-        tag_args = (tag_output,
-                    tag_lengths,
-                    outputs.tag_logits,
-                    self.tag_top_k,
-                    self.tag_prob_threshold,
-                    self.tag_prob_threshold_strategy)
-        span_args = (span_output,
-                     span_lengths,
-                     outputs.span_logits,
-                     self.span_top_k,
-                     self.span_prob_threshold,
-                     self.span_prob_threshold_strategy)
-
-        for output_batch, lengths, logits, top_k, prob_threshold, strategy in (
-                tag_args, span_args):
-            k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
-            logprobs = logits.log_softmax(-1).topk(k)
-            for length, sentence_scores, sentence_indices in zip(
-                    lengths, logprobs.values, logprobs.indices):
-                output_list: list[TagListT] = []
-                output_batch.append(output_list)
-                for scores, indices in zip(sentence_scores[:length].tolist(),
-                                           sentence_indices[:length].tolist()):
-                    output: TagListT = []
-                    output_list.append(output)
-                    if prob_threshold == 0:
-                        threshold = -float('inf')
-                    else:
-                        top_score = scores[0] if strategy == 'relative' else 0
-                        threshold = top_score + math.log(prob_threshold)
-                    for score, index in zip(scores, indices):
-                        if score < threshold:
-                            break
-                        elif index != 0 or output_batch == tag_output:
-                            output.append((index, score))
+        tag_output = extract_topk(outputs.tag_logits,
+                                  tag_lengths,
+                                  self.tag_top_k,
+                                  self.tag_prob_threshold,
+                                  self.tag_prob_threshold_strategy,
+                                  skip_index_0=False)
+        span_output = extract_topk(outputs.span_logits,
+                                   span_lengths,
+                                   self.span_top_k,
+                                   self.span_prob_threshold,
+                                   self.span_prob_threshold_strategy,
+                                   skip_index_0=True)
 
         spans_list = [[(*idx2span(i), output)
                        for i, output in enumerate(sent_span_output)
@@ -392,6 +475,67 @@ class Tagger:
         return [TaggerOutputSentence(list(words), tags, spans)
                 for words, tags, spans in zip(inputs, tag_output, spans_list)]
 
+    @torch.inference_mode()
+    def forward_topk(
+        self,
+        inputs: Sequence[Sequence[str]]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the model and return CPU top-k tensors for the raw lane.
+
+        Returns (tag_scores [B, W, k_tag] f32, tag_indices i64,
+        span_scores [B, S, k_span] f32, span_indices i64), where W/S are
+        the padded word/span counts. Thresholding happens downstream
+        (bobcat_rs), with semantics identical to `extract_topk`.
+        """
+        encodings = self.prepare_inputs(inputs, word_mask=True)
+        outputs = self._model_output(encodings)
+
+        def topk(logits: torch.Tensor, top_k: int) -> tuple[torch.Tensor,
+                                                            torch.Tensor]:
+            k = min(top_k, logits.size(-1)) if top_k else logits.size(-1)
+            scores, indices = logits.float().log_softmax(-1).topk(k)
+            return scores.cpu().contiguous(), indices.cpu().contiguous()
+
+        tag_scores, tag_indices = topk(outputs.tag_logits, self.tag_top_k)
+        span_scores, span_indices = topk(outputs.span_logits,
+                                         self.span_top_k)
+        return tag_scores, tag_indices, span_scores, span_indices
+
+    def make_batches(self,
+                     inputs: Sequence[Sequence[str]],
+                     batch_size: int) -> list[list[int]]:
+        """Group sentence indices into length-sorted batches.
+
+        Batching sentences of similar length together avoids wasting
+        compute on padding, which is especially costly for the span
+        classifier whose size grows quadratically with sentence length.
+
+        If `max_spans_per_batch` is set, it overrides `batch_size`:
+        each batch takes as many sentences as fit within that padded
+        span count, capping the memory used per batch. A sentence that
+        exceeds the budget on its own forms a singleton batch, which
+        may exceed the cap.
+
+        """
+        order = sorted(range(len(inputs)), key=lambda i: len(inputs[i]))
+        if self.max_spans_per_batch is None:
+            return [order[i:i + batch_size]
+                    for i in range(0, len(order), batch_size)]
+
+        batches: list[list[int]] = []
+        batch: list[int] = []
+        for i in order:
+            # `order` is sorted, so sentence `i` is the longest in the
+            # batch and determines its padded length
+            padded_spans = (len(batch) + 1) * chart_size(len(inputs[i]))
+            if batch and padded_spans > self.max_spans_per_batch:
+                batches.append(batch)
+                batch = []
+            batch.append(i)
+        if batch:
+            batches.append(batch)
+        return batches
+
     def __call__(self,
                  inputs: Sequence[Sequence[str]],
                  batch_size: int | None = None,
@@ -399,15 +543,20 @@ class Tagger:
         """Parse a list of sentences."""
         if batch_size is None:
             batch_size = self.batch_size
+        elif batch_size < 1:
+            raise ValueError(f'Invalid `batch_size`: {batch_size}')
 
-        output = TaggerOutput(tags=self.model.config.tags,
-                              cats=self.model.config.cats,
-                              sentences=[])
+        sentences: list[TaggerOutputSentence | None] = [None] * len(inputs)
+        for batch in tqdm(
+                self.make_batches(inputs, batch_size),
+                desc='Tagging sentences',
+                leave=False,
+                disable=verbose != VerbosityLevel.PROGRESS.value):
+            results = self.parse([inputs[i] for i in batch])
+            for i, sentence in zip(batch, results):
+                sentences[i] = sentence
 
-        for i in trange(0, len(inputs), batch_size,
-                        desc='Tagging sentences',
-                        leave=False,
-                        disable=verbose != VerbosityLevel.PROGRESS.value):
-            output.sentences.extend(self.parse(inputs[i:i+batch_size]))
-
-        return output
+        return TaggerOutput(
+                tags=self.model.config.tags,
+                cats=self.model.config.cats,
+                sentences=cast(List[TaggerOutputSentence], sentences))
