@@ -645,3 +645,41 @@ Companion numbers from the same run:
 einsum once instead of deep-copying and mutating the diagram every
 step. The one honest miss is construction, pending the deferred direct
 `CCGTree → FDiagram` recursion.
+
+## Fast diagram core — training validation
+
+Self-contained validation that `FastPytorchModel` trains identically to
+the stock `PytorchModel` and how much faster a training epoch runs.
+Script: `benchmarks/fasttrain_bench.py`. CI gate:
+`tests/backend/test_fast_training.py`.
+
+Setup: 200 COCO captions (`/tmp/coco_bench.txt`), deterministic keyword
+labels, `RemoveCupsRewriter` + `SpiderAnsatz` (all atomic types ->
+Dim(2)), filtered to 198 circuits with uniform output shape (2,)
+(80 positive / 118 negative). Both models built from the same
+circuits, started from identical cloned weights, trained full-batch with
+Adam (lr 0.05) for 10 epochs. i7-11800H CPU.
+
+**Correctness:** loss trajectories matched across all 10 epochs, max abs
+difference 5.96e-08 (consistent with the 1.7e-6 single-backward gradient
+match; the trajectory-match gate asserts allclose at atol 1e-4).
+
+**Speed (per-epoch forward+backward+step):**
+
+| model | ms/epoch | total |
+|---|---:|---:|
+| PytorchModel | 1324.9 | 13.25 s |
+| FastPytorchModel | 384.3 | 3.84 s |
+| speedup | **3.45x** | |
+
+Verdict: 3.45x per-epoch speedup on 198 circuits. The main driver is
+eliminating the per-step `deepcopy` + grammar-Functor traversal that
+`PytorchModel` pays for each of the 198 circuits every step (~2.36 ms ×
+198 per the fastdiag_bench single-diagram cost); `FastPytorchModel`
+replaces this with a one-off `to_contraction` spec extraction (cached by
+diagram id) and then just gathers weights and runs the greedy pairwise
+einsum. Optimizer and loss overhead is common to both models and is a
+minor share of the 1324.9 ms cycle. The greedy pairwise einsum is the
+remaining limiter — consistent with the 1.4x single-diagram contraction
+result from fastdiag_bench, where the contraction itself (not the
+deepcopy) was measured in isolation.
