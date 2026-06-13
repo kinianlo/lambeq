@@ -414,7 +414,25 @@ class Diagram(grammar.Diagram):
                                        box.type.product, dtype=dtype,
                                        backend=backend)
                 else:
-                    node = tn.Node(box.array,
+                    array = box.array
+                    # Constant boxes (e.g. caps) build their data with
+                    # numpy's default float64, which clashes with
+                    # float32 weights during ``tensordot``; cast to the
+                    # requested dtype so every node shares one dtype.
+                    # Complex arrays are left alone so a real ``dtype``
+                    # does not discard their imaginary part.
+                    try:
+                        is_complex = bool(array.is_complex())   # torch
+                    except AttributeError:
+                        is_complex = np.iscomplexobj(array)
+                    if not is_complex:
+                        if hasattr(array, 'astype'):
+                            array = array.astype(dtype)
+                        else:
+                            import torch
+                            array = array.to(
+                                torch.from_numpy(np.empty(0, dtype)).dtype)
+                    node = tn.Node(array,
                                    str(box.name),
                                    backend=backend)
 

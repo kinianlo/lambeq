@@ -34,14 +34,30 @@ Numeric conventions discovered from :mod:`lambeq.backend.tensor`
 * **Cap** -> ``tn.Node`` with a *non-delta* array (``arr[0] = 1`` and
   ``arr[-1] = 1``; see ``tensor.Cap.__init__``).  A cap is therefore
   emitted as an explicit constant factor, NOT unified.
-* **Word / plain Box** -> a factor whose array is ``box.data`` reshaped
-  to ``dom.dim + cod.dim`` (see ``tensor.Box.array``).  Model weights
-  are flat 1-D parameters, so the reshape recovers the per-leg axes.
-* A box's winding ``z`` (conjugation) is ignored: for the real-valued
-  classical pipeline the only conjugated boxes ``RemoveCupsRewriter``
-  emits are single-leg states, for which ``tensor.Box._conjugate_array``
-  reduces to the identity (and multi-leg conjugation cannot be
-  represented on flat data by the oracle either).
+* **Word / plain Box** -> a factor that reproduces ``tensor.Box.array``
+  (for a plain box) or ``tensor.Daggered.array`` (for a daggered box)
+  *exactly*.  Model weights are flat 1-D parameters; :func:`evaluate`
+  reshapes them to the per-leg axes and then applies the SAME
+  ``moveaxis`` transforms ``tensor.py`` applies, so the leg ids can be
+  assigned in natural ``dom + cod`` order.  The two transforms are:
+
+  - **conjugate** (``tensor.Box._conjugate_array``, applied when the
+    underlying box has odd winding ``z``): reshape to ``dom.dim +
+    cod.dim`` then reverse the axes *within* the dom block and *within*
+    the cod block.
+  - **adjoint / dagger** (``tensor.Box._adjoint_array``, used by
+    ``Daggered.array``): take the underlying box's array (already
+    conjugated if odd ``z``) and BLOCK-SWAP the dom-block axes with the
+    cod-block axes.
+
+  ``RemoveCupsRewriter`` emits ``grammar.Daggered`` boxes pervasively,
+  so reproducing the adjoint block-swap (not just a leg reversal) is
+  required for correctness; faking it transposes the result.  A
+  daggered :class:`FBox` carries the swapped orientation: ``dom =
+  inner.cod``, ``cod = inner.dom``, ``z = inner.z`` and ``is_dagger =
+  True``, and its flat payload is the inner box's data laid out as
+  ``inner.dom.dim + inner.cod.dim`` (i.e. ``cod.dim + dom.dim`` of the
+  FBox).
 
 The diagram's input (``dom``) wires correspond to ``to_tn``'s leading
 ``CopyNode(2, dim)`` identity nodes, so each initial frontier id is an
@@ -85,6 +101,38 @@ class ContractionSpec:
     factors: tuple[tuple[Any, tuple[int, ...]], ...]
     out_indices: tuple[int, ...]
     sizes: dict[int, int]
+
+
+@dataclass(frozen=True)
+class _BoxFactor:
+    """A tensor-box factor that reproduces ``tensor.Box.array`` exactly.
+
+    The flat ``data`` payload (a :class:`Symbol` or a concrete array) is
+    resolved and reshaped at evaluation time, then the ``z``-conjugation
+    and ``is_dagger`` adjoint transforms are applied with ``moveaxis``
+    so the resulting axes line up with the factor's leg ids in natural
+    ``dom + cod`` order.
+
+    Attributes
+    ----------
+    data : Symbol or array
+        The box's flat payload (``box.data`` of the underlying box).
+    n_dom : int
+        Number of dom legs of the FBox (``len(box.dom)``).
+    n_cod : int
+        Number of cod legs of the FBox (``len(box.cod)``).
+    z_parity : int
+        ``box.z % 2`` -- 1 selects the conjugation transform.
+    is_dagger : bool
+        Whether the box is daggered (selects the adjoint block-swap).
+
+    """
+
+    data: Any
+    n_dom: int
+    n_cod: int
+    z_parity: int
+    is_dagger: bool
 
 
 class _UnionFind:
@@ -145,26 +193,26 @@ def to_contraction(d: FDiagram) -> ContractionSpec:
                 uf.union(rep, x)
             frontier[off:off + n_dom] = [rep] * len(box.cod)
         elif kind == CAP:
-            # Non-delta constant array; emit as an explicit factor.
+            # Non-delta constant array; emit as an explicit factor.  The
+            # dtype is left to ``evaluate`` so it follows the weights.
             d0, d1 = dim_of(box.cod[0]), dim_of(box.cod[1])
             ids = [fresh(d0), fresh(d1)]
-            arr = np.zeros(d0 * d1, dtype=np.float32)
+            arr = np.zeros(d0 * d1)
             arr[0] = 1.0
             arr[-1] = 1.0
             factors.append((arr, ids))
             frontier[off:off + n_dom] = ids
         else:   # WORD / PLAIN: a tensor box with a payload
+            # Assign leg ids in NATURAL ``dom + cod`` order; the precise
+            # conjugate / adjoint permutation is reproduced on the array
+            # values in ``evaluate`` (see ``_BoxFactor``), matching
+            # ``tensor.Box.array`` / ``tensor.Daggered.array``.
             cod_ids = [fresh(dim_of(a)) for a in box.cod]
-            if box.z % 2:
-                # Conjugated box (``tensor.Box`` with odd winding): its
-                # array axes map to the wires in reversed order within
-                # the dom block and within the cod block.  This mirrors
-                # ``tensor.Box._conjugate_array`` (a no-op on values for
-                # real weights, a permutation on legs).
-                leg_ids = (dom_ids[::-1] + cod_ids[::-1])
-            else:
-                leg_ids = dom_ids + cod_ids
-            factors.append((box.payload, leg_ids))
+            leg_ids = dom_ids + cod_ids
+            factors.append((_BoxFactor(box.payload, len(box.dom),
+                                       len(box.cod), box.z % 2,
+                                       box.is_dagger),
+                            leg_ids))
             frontier[off:off + n_dom] = cod_ids
 
     out_raw = input_ids + frontier
@@ -262,6 +310,63 @@ def _contract(factors: list[tuple[Any, list[int]]],
     return torch.einsum(f'{s_in}->{s_out}', tensor)
 
 
+def _conjugate(arr, n_dom: int, n_cod: int):
+    """Reverse axes within the dom block and within the cod block.
+
+    Mirrors ``tensor.Box._conjugate_array`` (without the ``np.conj``, a
+    no-op on the real weights of the classical pipeline): the array is
+    already reshaped to ``dom.dim + cod.dim``; this ``moveaxis`` sends
+    input axis ``i`` to ``n_dom - 1 - i`` (modulo the rank).
+    """
+    import torch
+
+    n = n_dom + n_cod
+    src = tuple(range(n))
+    dst = tuple((n_dom - 1 - i) % n for i in range(n))
+    return torch.movedim(arr, src, dst)
+
+
+def _adjoint(arr, n_dom: int, n_cod: int):
+    """Block-swap the dom-block axes with the cod-block axes.
+
+    Mirrors ``tensor.Box._adjoint_array`` (without ``np.conj``): input
+    axis ``i`` moves to ``i + n_cod`` if it is in the dom block, else
+    ``i - n_dom``.  ``n_dom`` / ``n_cod`` are the *underlying* box's
+    dom / cod leg counts.
+    """
+    import torch
+
+    n = n_dom + n_cod
+    src = tuple(range(n))
+    dst = tuple(i + n_cod if i < n_dom else i - n_dom for i in range(n))
+    return torch.movedim(arr, src, dst)
+
+
+def _box_array(raw, bf: _BoxFactor, dom_dims, cod_dims):
+    """Reproduce ``tensor.Box.array`` / ``Daggered.array`` for a factor.
+
+    Returns an array whose axes are ordered ``dom legs + cod legs`` (the
+    natural order the factor's leg ids were assigned in), so it can be
+    contracted directly.
+    """
+    if bf.is_dagger:
+        # FBox carries the daggered orientation: dom = inner.cod,
+        # cod = inner.dom.  The flat payload is the inner data laid
+        # out as inner.dom.dim + inner.cod.dim == cod_dims + dom_dims.
+        arr = raw.reshape(tuple(cod_dims) + tuple(dom_dims))
+        if bf.z_parity:
+            # Inner conjugation: inner nd = len(inner.dom) = n_cod,
+            # inner nc = len(inner.cod) = n_dom.
+            arr = _conjugate(arr, bf.n_cod, bf.n_dom)
+        # Adjoint block-swap with the inner box's dom/cod counts.
+        return _adjoint(arr, bf.n_cod, bf.n_dom)
+
+    arr = raw.reshape(tuple(dom_dims) + tuple(cod_dims))
+    if bf.z_parity:
+        arr = _conjugate(arr, bf.n_dom, bf.n_cod)
+    return arr
+
+
 def evaluate(spec: ContractionSpec, weights: dict, backend: str = 'torch'):
     """Evaluate a :class:`ContractionSpec` against a weight table.
 
@@ -280,16 +385,35 @@ def evaluate(spec: ContractionSpec, weights: dict, backend: str = 'torch'):
 
     import torch
 
+    # Constant factors (caps) follow the weight dtype so float64 weights
+    # do not crash einsum against a hardcoded float32 constant.
+    weight_dtype = None
+    for v in weights.values():
+        dt = getattr(v, 'dtype', None)
+        if dt is not None:
+            weight_dtype = dt
+            break
+    if weight_dtype is None:
+        weight_dtype = torch.float32
+
+    def resolve(data):
+        if isinstance(data, Symbol):
+            try:
+                return weights[data]
+            except KeyError:
+                return data.scale * weights[data.unscaled]
+        return torch.as_tensor(data, dtype=weight_dtype)
+
     factors: list[tuple[Any, list[int]]] = []
     for payload, ids in spec.factors:
         dims = tuple(spec.sizes[i] for i in ids)
-        if isinstance(payload, Symbol):
-            try:
-                raw = weights[payload]
-            except KeyError:
-                raw = payload.scale * weights[payload.unscaled]
+        if isinstance(payload, _BoxFactor):
+            raw = resolve(payload.data)
+            dom_dims = dims[:payload.n_dom]
+            cod_dims = dims[payload.n_dom:]
+            arr = _box_array(raw, payload, dom_dims, cod_dims)
         else:
-            raw = torch.as_tensor(payload, dtype=torch.float32)
-        factors.append((raw.reshape(dims), list(ids)))
+            arr = torch.as_tensor(payload, dtype=weight_dtype).reshape(dims)
+        factors.append((arr, list(ids)))
 
     return _contract(factors, spec.out_indices)
