@@ -31,7 +31,7 @@ def test_combinator_matches_grammar(gfn, bfn, args):
 def test_swaps_matches_grammar():
     for left, right in [(N, S), (N @ S, P), (N @ S, P @ N), (N, S @ P)]:
         expected = grammar.Diagram.swap(left, right)
-        # grammar.Swap.__new__ returns a Box (not a Diagram) for atomic inputs;
+        # grammar.Swap.__new__ returns a Box for atomic inputs;
         # normalise to Diagram so the comparison is type-consistent.
         if not isinstance(expected, grammar.Diagram):
             expected = expected.to_diagram()
@@ -67,3 +67,36 @@ def test_swaps_box_kinds():
 def test_fa_is_cups():
     d = build.fa(_g(N), _g(S))
     assert all(b.kind == CUP for b, _ in d.terms)
+
+
+def test_gfx_matches_grammar_oracle():
+    mid, l, join, r = S, N, P, N
+    got = convert.to_grammar(build.gfx(_g(mid), _g(l), _g(join), _g(r)))
+    expected = (
+        grammar.Diagram.swap(mid @ join.l, l) @ grammar.Id(join)
+        >> grammar.Id(l @ mid) @ grammar.Diagram.cups(join.l, join)
+    ) @ grammar.Id(r)
+    if not isinstance(expected, grammar.Diagram):
+        expected = expected.to_diagram()
+    assert got == expected, ('gfx oracle mismatch', repr(got), repr(expected))
+
+
+def test_gbx_matches_grammar_oracle():
+    mid, l, join, r = S, N, P, N
+    got = convert.to_grammar(build.gbx(_g(mid), _g(l), _g(join), _g(r)))
+    expected = grammar.Id(l) @ (
+        grammar.Id(join) @ grammar.Diagram.swap(r, join.r @ mid)
+        >> grammar.Diagram.cups(join, join.r) @ grammar.Id(mid @ r)
+    )
+    if not isinstance(expected, grammar.Diagram):
+        expected = expected.to_diagram()
+    assert got == expected, ('gbx oracle mismatch', repr(got), repr(expected))
+
+
+def test_type_raising_multi_atom():
+    T = S @ N
+    got = convert.to_grammar(build.ftr(_g(T), _g(N)))
+    expected = grammar.Diagram.caps(T, T.l) @ grammar.Id(N)
+    if not isinstance(expected, grammar.Diagram):
+        expected = expected.to_diagram()
+    assert got == expected

@@ -38,6 +38,7 @@ def _caps_any(left: FTy, right: FTy) -> FDiagram:
     still passing ``FDiagram._check`` (offsets only, no adjoint check).
     CAP FBoxes convert correctly via ``convert.box_to_grammar``.
     """
+    assert right == left.l, 'right == left.l (left-adjoint caps orientation)'
     n = len(left)
     terms = tuple(
         (FBox('CAP', FTy(),
