@@ -22,6 +22,7 @@ from lambeq.backend.fast.diagram import (
     cap, caps, cup, cups, spider, swap, word,
 )
 from lambeq.backend.fast.functor import FFunctor
+from lambeq.backend.fast.normal import normal_form, remove_snakes
 from lambeq.backend.fast import convert
 
 __all__ = ['atom', 'atom_name', 'atom_z', 'FTy', 'no_validation',
@@ -29,4 +30,4 @@ __all__ = ['atom', 'atom_name', 'atom_z', 'FTy', 'no_validation',
            'CAP', 'CUP', 'PLAIN', 'SPIDER', 'SWAP', 'WORD',
            'FBox', 'FDiagram', 'FFunctor',
            'cap', 'caps', 'cup', 'cups', 'spider', 'swap', 'word',
-           'convert']
+           'normal_form', 'remove_snakes', 'convert']
