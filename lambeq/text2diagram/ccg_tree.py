@@ -603,8 +603,8 @@ def _fast_rule_layer(rule, dom, cod):
         return build.gfc(f(left.result), mid, f(right)[len(mid):])
     if rule == CCGRule.GENERALIZED_BACKWARD_COMPOSITION:
         mid = f(right.argument)
-        return build.gbc(f(left)[:len(f(left)) - len(mid)], mid,
-                         f(right.result))
+        fl = f(left)
+        return build.gbc(fl[:len(fl) - len(mid)], mid, f(right.result))
     if rule == CCGRule.GENERALIZED_FORWARD_CROSSED_COMPOSITION:
         # ``CCGType.split`` returns grammar.Ty objects directly.
         mid = f(left.left)
