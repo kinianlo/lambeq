@@ -88,6 +88,33 @@ def test_functor_matches_oracle_on_rotated_plain_box():
     assert got == expected
 
 
+def test_dict_ob_matches_callable_ob():
+    """Dict-form FFunctor must produce the same result as the equivalent
+    callable-form functor on a diagram with both mapped and unmapped wires."""
+    from lambeq.backend.fast import convert
+
+    n_id = atom('n')
+    n_ty = FTy.of('n')
+    s_ty = FTy.of('s')
+    mapped_n = n_ty @ n_ty   # n -> n @ n
+
+    # Build a small diagram: a Word with cod n @ s  (n is mapped, s is not)
+    g = grammar.Word('the', grammar.Ty('n') @ grammar.Ty('s')).to_diagram()
+    fd = convert.to_fast(g)
+
+    def f_ob_callable(_, a):
+        return mapped_n if a == n_id else FTy((a,))
+
+    def f_ar(functor, box):
+        return FBox(box.name, functor(box.dom), functor(box.cod),
+                    box.kind, box.z, box.is_dagger, box.payload)
+
+    callable_functor = FFunctor(ob=f_ob_callable, ar=f_ar)
+    dict_functor = FFunctor(ob={n_id: mapped_n}, ar=f_ar)
+
+    assert dict_functor(fd) == callable_functor(fd)
+
+
 def test_functor_cache_returns_shared_object():
     calls = []
 

@@ -59,10 +59,18 @@ class FFunctor:
 
     Parameters
     ----------
-    ob : callable
-        ``(FFunctor, int) -> FTy`` mapping a *non-rotated* atom id (an
-        atom with ``z == 0``) to a type.  Rotated atoms are handled
-        automatically by unwinding and rotating the result.
+    ob : callable or dict
+        Either:
+
+        * A callable ``(FFunctor, int) -> FTy`` mapping a *non-rotated*
+          atom id (an atom with ``z == 0``) to a type.  Rotated atoms
+          are handled automatically by unwinding and rotating the result.
+        * A ``dict[int, FTy]`` whose keys are ``z == 0`` atom ids (as
+          returned by :func:`~lambeq.backend.fast.types.atom`).  The
+          dict entries are copied into the internal atom cache at
+          construction time.  Atoms not present in the dict map to
+          themselves (identity: ``FTy((a,))``).
+
     ar : callable
         ``(FFunctor, FBox) -> FBox | FDiagram`` mapping a ``PLAIN`` or
         ``WORD`` box (with ``z == 0`` and ``is_dagger == False``) to its
@@ -70,12 +78,16 @@ class FFunctor:
     """
 
     def __init__(self,
-                 ob: Callable[['FFunctor', int], FTy],
+                 ob: Union[Callable[['FFunctor', int], FTy], dict],
                  ar: Callable[['FFunctor', FBox], Image]) -> None:
-        self.custom_ob = ob
-        self.custom_ar = ar
         self._atom_cache: dict[int, FTy] = {}
         self._box_cache: dict[FBox, Image] = {}
+        if isinstance(ob, dict):
+            self._atom_cache.update(ob)   # copy; don't alias caller's dict
+            self.custom_ob = None
+        else:
+            self.custom_ob = ob
+        self.custom_ar = ar
 
     # -- dispatch -----------------------------------------------------
     def __call__(self, x: FTy | FBox | FDiagram) -> FTy | Image:
@@ -93,7 +105,8 @@ class FFunctor:
         try:
             return self._atom_cache[a]
         except KeyError:
-            ty = self.custom_ob(self, a)
+            ty = (FTy((a,)) if self.custom_ob is None
+                  else self.custom_ob(self, a))
             self._atom_cache[a] = ty
             return ty
 
