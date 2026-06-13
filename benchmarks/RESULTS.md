@@ -559,7 +559,7 @@ both on THIS laptop.
 
 | operation        |  old ms |  fast ms |  ratio | spec target |
 |------------------|--------:|---------:|-------:|------------:|
-| construction     |  2.5087 |   2.8501 |   0.9x |       <=0.3 |
+| construction     |  2.4851 |   0.7630 |     3x |       <=0.3 |
 | remove_cups *    |  4.5011 |   0.0057 |   785x |       <=0.4 |
 | ansatz (proxy) † |  9.3365 |   0.0747 |   125x |      <=0.75 |
 | copy             |  0.4886 |   0.0000 |    inf |   ~0 (ref)  |
@@ -617,16 +617,10 @@ Companion numbers from the same run:
 
 ### Verdicts vs spec targets
 
-- **construction — MISS** (0.9x; fast is *slower* than old `to_diagram`).
-  `CCGTree.to_fast_diagram` is still the thin `to_fast(self.to_diagram())`
-  wrapper, so it does everything `to_diagram` does **plus** the
-  grammar→fast conversion. The direct `CCGTree → FDiagram` recursion is
-  the optimisation the plan explicitly deferred (Task 3 in
-  `docs/superpowers/plans/2026-06-12-fast-diagram-core.md`: "implement as
-  `convert.to_fast(self.to_diagram())` first … then optimize to the
-  direct recursion ONLY if Task 7's benchmark misses the 0.3 ms
-  target"). It does miss; the direct recursion is the recorded
-  follow-up.
+- **construction — PARTIAL MISS** (3x; 0.76 ms vs <=0.3 ms target).
+  Direct `CCGTree → FDiagram` recursion landed (Task 3); see
+  `### Direct construction (2026-06-13)` below for full details and
+  profile.
 - **remove_cups / snakes — HIT on target, but 5x not 10x on the fair
   comparison**, because the corpus has almost no snakes to remove. Fast
   0.0057 ms is well under the 0.4 ms target.
@@ -643,5 +637,38 @@ Companion numbers from the same run:
 (deepcopy gone; shared immutable refs), hash/eq from stored hashes
 (42x), and the training-step unlock — `to_contraction` extracts the
 einsum once instead of deep-copying and mutating the diagram every
-step. The one honest miss is construction, pending the deferred direct
-`CCGTree → FDiagram` recursion.
+step. Construction improved 3x via direct recursion (0.76 ms) but
+remains above the 0.3 ms spec target; the remaining cost is
+FDiagram-layer assembly in Python (see below).
+
+### Direct construction (2026-06-13)
+
+`CCGTree.to_fast_diagram` now builds the `FDiagram` directly via
+`lambeq/backend/fast/build.py` and `_to_fast_diagram` /
+`_fast_rule_layer` in `ccg_tree.py`, skipping the `grammar.Diagram`
+assembly entirely.
+
+| path | ms/diagram | vs `to_diagram()` |
+|------|----------:|------------------:|
+| wrapper `to_fast(to_diagram())` | ~2.85 | 0.9× |
+| **direct recursion `to_fast_diagram()`** | **0.7630** | **3×** |
+| old `to_diagram()` baseline | 2.4851 | 1× |
+
+Numbers from `benchmarks/fastdiag_bench.py /tmp/coco_bench.txt --num
+2000`, 1990 parsed, best of 3 warmed repeats, i7-11800H CPU.
+
+**Motivation:** the pre-Task-3 profile of `to_diagram()` showed type
+logic 0.14 ms / grammar object assembly 2.06 ms = 94% assembly cost.
+The direct path eliminates that assembly; the 0.76 ms that remains is
+`FDiagram` layer construction (per-node Python dispatch in
+`_fast_rule_layer` plus layer-list allocation per depth level).
+
+**<=0.4 ms target: NOT MET** (0.76 ms). The FDiagram assembly itself
+costs ~0.62 ms above the 0.14 ms type-logic floor. The bottleneck is
+per-node Python overhead: each combinator rule does one dict lookup and
+list-append per CCG combinator step; removing it requires a Cython or
+Rust rewrite of the tree traversal — out of scope here.
+
+**Full-corpus gate:** 1990/1990 trees satisfy
+`convert.to_grammar(t.to_fast_diagram()) == t.to_diagram()` (Step-1
+script, not committed).
