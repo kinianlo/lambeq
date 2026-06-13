@@ -50,11 +50,15 @@ class InterchangerError(Exception):
 # words/spiders.
 # ---------------------------------------------------------------------------
 def _is_cap(box: FBox) -> bool:
+    # Width-2 is intentional: atomic cups/caps are always width 2;
+    # multi-atom cups don't exist in the fast encoding.
     return (box.kind in (CUP, CAP)
             and len(box.dom) == 0 and len(box.cod) == 2)
 
 
 def _is_cup(box: FBox) -> bool:
+    # Width-2 is intentional: atomic cups/caps are always width 2;
+    # multi-atom cups don't exist in the fast encoding.
     return (box.kind in (CUP, CAP)
             and len(box.cod) == 0 and len(box.dom) == 2)
 
@@ -94,6 +98,10 @@ def _interchange(terms: list[Term], i: int, j: int) -> None:
 
     Decomposes into a run of adjacent swaps, exactly as the oracle's
     recursive ``interchange`` does for ``left=False``.
+
+    Note: trusts callers for index bounds (oracle raises IndexError on
+    out-of-range i/j; internal callers track indices identically so
+    bounds are always valid when this is reached).
     """
     if i == j:
         return
