@@ -5,7 +5,10 @@ Builds circuits from COCO captions (deterministic synthetic labels),
 starts both models from identical cloned weights, runs a minimal
 full-batch Adam loop on each, and reports the loss-trajectory match and
 the per-epoch wall-clock speedup. Exits nonzero if the trajectories
-diverge (so the script doubles as a correctness self-check).
+diverge (so the script doubles as a correctness self-check). The warm-up
+epoch (one forward pass before timing begins) is excluded from all
+per-epoch timing numbers, so FastPytorchModel's one-off spec-cache
+extraction does not inflate reported per-epoch costs.
 
 Example:
     python benchmarks/fasttrain_bench.py /tmp/coco_bench.txt --num 200
@@ -43,6 +46,8 @@ def build_circuits(token_lists, dim=2):
             continue
         circuits.append(ansatz(remove_cups(tree.to_diagram())))
         labels.append(label_for(toks))
+    if not circuits:
+        return [], [], None, len(token_lists)
     shapes = [tuple(c.cod.dim) for c in circuits]
     modal = Counter(shapes).most_common(1)[0][0]
     keep = [i for i, s in enumerate(shapes) if s == modal]
@@ -82,6 +87,10 @@ def main():
     token_lists = token_lists[:args.num]
 
     circuits, labels, shape, n_read = build_circuits(token_lists)
+    if not circuits:
+        print('no circuits built (all sentences failed to parse)',
+              file=sys.stderr)
+        sys.exit(2)
     print(f'read {n_read} captions -> {len(circuits)} circuits kept '
           f'(uniform output shape {shape}); '
           f'{sum(labels)} positive / {len(labels) - sum(labels)} negative')
@@ -117,7 +126,10 @@ def main():
           f'({sum(old_times):.2f} s total)')
     print(f'  FastPytorchModel : {fast_ms:8.1f} ms/epoch '
           f'({sum(fast_times):.2f} s total)')
-    print(f'  speedup          : {old_ms / fast_ms:.2f}x')
+    if fast_ms > 0:
+        print(f'  speedup          : {old_ms / fast_ms:.2f}x')
+    else:
+        print('  speedup          : n/a')
 
     if maxdiff > 1e-3:
         print(f'\nTRAJECTORY DIVERGENCE: maxdiff {maxdiff:.2e} > 1e-3',
