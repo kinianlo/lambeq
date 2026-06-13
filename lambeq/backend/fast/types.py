@@ -65,7 +65,8 @@ def atom_r(i: int) -> int:
 
 
 class FTy:
-    """Immutable composite type: a tuple of atom ids with stored hash."""
+    """Immutable composite type: a tuple of atom ids with
+    stored hash."""
 
     __slots__ = ('atoms', '_hash')
 
@@ -81,7 +82,7 @@ class FTy:
         return FTy(self.atoms + other.atoms)
 
     @property
-    def l(self) -> FTy:
+    def l(self) -> FTy:  # noqa: E741, E743
         return FTy(tuple(atom_l(a) for a in reversed(self.atoms)))
 
     @property

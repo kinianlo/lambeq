@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 # implied. See the License for the specific language governing
 # permissions and limitations under the License.
-from lambeq.backend import grammar
+import pytest
+
+from lambeq.backend import fast, grammar
 from lambeq.backend.fast import FBox, FFunctor, FTy, convert
 from lambeq.backend.fast.types import atom
 
@@ -128,3 +130,62 @@ def test_functor_cache_returns_shared_object():
     out = f(d)
     assert calls == ['f']                       # second occurrence cached
     assert out.terms[0][0] is out.terms[1][0]   # SHARED object, no copy
+
+
+def test_validation_raises_on_wrong_image_shape():
+    """Under fast.validation(), map_box raises TypeError when the image
+    has mismatched dom/cod; under no_validation(), the same functor
+    applies without error."""
+    n = grammar.Ty('n')
+    n_ty = FTy.of('n')
+
+    # ar widens cod: maps n->n to n->n@n (wrong shape)
+    def f_ar(functor, box):
+        return FBox(box.name, n_ty, n_ty @ n_ty)
+
+    f_functor = FFunctor(ob=lambda _, a: FTy((a,)), ar=f_ar)
+    fd = convert.to_fast(grammar.Box('f', n, n).to_diagram())
+
+    # Validation is on (autouse fixture), but make intent explicit.
+    # Wrong image dom/cod must raise TypeError.
+    with fast.validation():
+        with pytest.raises(TypeError):
+            f_functor(fd)
+
+    # Image was not cached (error prevents caching); no_validation
+    # must apply the same functor without raising.
+    with fast.no_validation():
+        f_functor(fd)  # must not raise
+
+
+def test_functor_multi_term_rotated_image_vs_oracle():
+    """ar maps a PLAIN box to a two-box diagram; applied to a z-rotated
+    plain box, the fast result must match the grammar oracle."""
+    n = grammar.Ty('n')
+
+    # Grammar oracle: maps box 'f' to g >> h (a two-box diagram)
+    g = grammar.Box('g', n, n)
+    h = grammar.Box('h', n, n)
+
+    def g_ar(functor, box):
+        return g.to_diagram() >> h.to_diagram()
+
+    g_functor = grammar.Functor(grammar.grammar, ob=lambda _, ty: ty,
+                                ar=g_ar)
+
+    # Grammar diagram: single z=1 rotated box
+    gd = grammar.Box('f', n, n).rotate(1).to_diagram()
+    expected = g_functor(gd)
+
+    # Fast functor: ar returns an FDiagram with two plain boxes
+    fg = FBox('g', FTy.of('n'), FTy.of('n'))
+    fh = FBox('h', FTy.of('n'), FTy.of('n'))
+
+    def f_ar(functor, box):
+        return fg.to_diagram() >> fh.to_diagram()
+
+    f_functor = FFunctor(ob=lambda _, a: FTy((a,)), ar=f_ar)
+    fast_d = convert.to_fast(gd)
+    got = convert.to_grammar(f_functor(fast_d))
+
+    assert got == expected

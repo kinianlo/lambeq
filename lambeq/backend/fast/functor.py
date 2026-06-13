@@ -31,8 +31,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Union
 
-from lambeq.backend.fast.diagram import (CAP, CUP, FBox, FDiagram, PLAIN,
-                                         SPIDER, SWAP, WORD)
+from lambeq.backend.fast.diagram import (CAP, CUP, FBox, FDiagram,
+                                         SPIDER, SWAP)
 from lambeq.backend.fast.types import atom, atom_name, atom_z, FTy
 from lambeq.backend.fast.validate import validation_enabled
 
@@ -64,7 +64,8 @@ class FFunctor:
 
         * A callable ``(FFunctor, int) -> FTy`` mapping a *non-rotated*
           atom id (an atom with ``z == 0``) to a type.  Rotated atoms
-          are handled automatically by unwinding and rotating the result.
+          are handled automatically by unwinding and rotating
+          the result.
         * A ``dict[int, FTy]`` whose keys are ``z == 0`` atom ids (as
           returned by :func:`~lambeq.backend.fast.types.atom`).  The
           dict entries are copied into the internal atom cache at
@@ -74,7 +75,8 @@ class FFunctor:
     ar : callable
         ``(FFunctor, FBox) -> FBox | FDiagram`` mapping a ``PLAIN`` or
         ``WORD`` box (with ``z == 0`` and ``is_dagger == False``) to its
-        image.  Structural and rotated/daggered boxes never reach ``ar``.
+        image.  Structural and rotated/daggered boxes
+        never reach ``ar``.
     """
 
     def __init__(self,
@@ -164,7 +166,8 @@ class FFunctor:
         if kind == SPIDER:
             return self._map_spider(box)
 
-        # PLAIN / WORD.  Rotated boxes are unwound, mapped, rotated back.
+        # PLAIN / WORD.  Rotated boxes are unwound, mapped,
+        # rotated back.
         if box.z != 0:
             unwound = FBox(box.name,
                            _rotate_ty(box.dom, -box.z),
@@ -176,12 +179,14 @@ class FFunctor:
     # -- structural boxes ---------------------------------------------
     def _map_cup(self, box: FBox) -> FDiagram:
         # A grammar cup is atomic: one left wire, one right wire.
+        # Note: composite reversed cups (z odd, multi-atom mapped type)
+        # are unsupported -- grammar itself raises ValueError for them.
         left = self.ob(box.dom[:1])
         right = self.ob(box.dom[1:])
         z = box.z
         n = len(left)
-        # grammar Cup.__new__ order: zip(reversed(left), right), the i-th
-        # pair sits at offset n - 1 - i.
+        # grammar Cup.__new__ order: zip(reversed(left), right),
+        # the i-th pair sits at offset n - 1 - i.
         terms = tuple(
             (FBox('CUP', FTy((left[n - 1 - i],)) @ FTy((right[i],)),
                   FTy(), CUP, z), n - 1 - i)
@@ -193,8 +198,8 @@ class FFunctor:
         right = self.ob(box.cod[1:])
         z = box.z
         n = len(left)
-        # grammar Cap.__new__ order: zip(left, reversed(right)), the i-th
-        # pair sits at offset i.
+        # grammar Cap.__new__ order: zip(left, reversed(right)),
+        # the i-th pair sits at offset i.
         terms = tuple(
             (FBox('CAP', FTy(),
                   FTy((left[i],)) @ FTy((right[n - 1 - i],)), CAP, z), i)
@@ -222,9 +227,11 @@ class FFunctor:
         n_in, n_out = len(box.dom), len(box.cod)
         typ = self.ob(FTy((src[0],)))
         if len(typ) != 1:
-            # grammar builds a composite spider via permutations; this is
-            # out of scope for v1 (no spiders in the corpus).  Raising is
-            # an honest mirror of "unsupported", not a silent wrong answer.
+            # grammar builds a composite spider via
+            # permutations; this is out of scope for v1
+            # (no spiders in the corpus).  Raising is
+            # an honest mirror of "unsupported", not a
+            # silent wrong answer.
             raise NotImplementedError(
                 'FFunctor: spider whose wire type maps to a multi-atom '
                 'type is not supported')
@@ -249,7 +256,8 @@ class FFunctor:
 
 
 # ---------------------------------------------------------------------------
-# Rotation of an *image* (target-category value), used by the z != 0 path.
+# Rotation of an *image* (target-category value), used by
+# the z != 0 path.
 # Mirrors grammar's Box.rotate / Diagram.rotate / Layer.rotate.
 # ---------------------------------------------------------------------------
 def _rotate_image(image: Image, z: int) -> Image:
@@ -294,8 +302,9 @@ def _rotate_fbox(b: FBox, z: int) -> FBox:
 
 def _rotate_fdiagram(d: FDiagram, z: int) -> FDiagram:
     odd = z % 2 == 1
-    # Frontier width before each term (in the un-rotated diagram); used to
-    # reflect offsets for odd rotations (Layer.rotate swaps left/right).
+    # Frontier width before each term (in the un-rotated
+    # diagram); used to reflect offsets for odd rotations
+    # (Layer.rotate swaps left/right).
     widths_before: list[int] = []
     running = len(d.dom)
     for box, _ in d.terms:
