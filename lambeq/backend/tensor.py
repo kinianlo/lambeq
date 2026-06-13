@@ -176,33 +176,44 @@ class Box(grammar.Box):
     def array(self):
         if self.data is not None:
             if self.z % 2:
-                ret_arr = self._conjugate_array()
-            else:
-                ret_arr = get_backend().array(self.data)
-
-            return ret_arr.reshape(self.dom.dim + self.cod.dim)
+                # ``_conjugate_array`` already returns a correctly
+                # shaped, leg-ordered array; do not reshape it again.
+                return self._conjugate_array()
+            return get_backend().array(self.data).reshape(
+                self.dom.dim + self.cod.dim)
 
     def _adjoint_array(self):
         """Returns the adjoint of the box's data"""
 
         arr = self.array
 
-        source = range(len(self.dom @ self.cod))
-        target = [i + len(self.cod) if i < len(self.dom) else
-                  i - len(self.dom) for i in range(len(self.dom @ self.cod))]
+        n = len(self.dom @ self.cod)
+        source = tuple(range(n))
+        target = tuple(i + len(self.cod) if i < len(self.dom) else
+                       i - len(self.dom) for i in range(n))
         with backend() as np:
-            return np.conjugate(np.moveaxis(arr, source, target))
+            # ``np.conj`` (not ``conjugate``) resolves on numpy, pytorch
+            # and jax backends alike.
+            return np.conj(np.moveaxis(arr, source, target))
 
     def _conjugate_array(self):
-        """Returns the diagrammtic conjugate of the box's data"""
+        """Returns the diagrammatic conjugate of the box's data.
+
+        The data is reshaped to ``dom.dim + cod.dim`` first -- model
+        weights arrive as flat 1-D parameters -- then the legs are
+        reversed within the dom block and within the cod block (the
+        categorical conjugate).  Index tuples (rather than ``range`` /
+        ``list``) are passed to ``moveaxis`` so the pytorch backend
+        accepts them.
+        """
 
         dom, cod = self.dom, self.cod
+        n = len(dom @ cod)
+        array = get_backend().array(self.data).reshape(dom.dim + cod.dim)
         with backend() as np:
-            array = np.moveaxis(self.data,
-                                range(len(dom @ cod)),
-                                [len(dom) - i - 1
-                                    for i in range(len(dom @ cod))])
-            return np.conjugate(array)
+            array = np.moveaxis(array, tuple(range(n)),
+                                tuple(len(dom) - i - 1 for i in range(n)))
+            return np.conj(array)
 
     def dagger(self):
         """Get the dagger (adjoint) of the box.
