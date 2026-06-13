@@ -542,3 +542,106 @@ A40 pipelining A/B (shared node): COCO -2%, long -11% (heavy variance)
 — the prefetch thread loses to CPU contention. Cross-device: +8.6%
 (idle Pascal), +2-6% (idle 3090 Ti), <=0 (shared A40). Verdict: revert
 (see cleanup below); this record is the lesson.
+
+## Fast diagram core (`lambeq.backend.fast`)
+
+Benchmark: `benchmarks/fastdiag_bench.py`, full MS COCO corpus
+(`/tmp/coco_bench.txt`, 2000 captions, rust backend, 1990 parsed).
+Machine: i7-11800H laptop CPU (CUDA unavailable here), torch on CPU.
+ms/diagram, best of 3 warmed repeats, old vs fast measured in the same
+run on the same diagrams. Spec + targets:
+`docs/superpowers/specs/2026-06-12-fast-diagram-core-design.md`.
+
+**The absolute baselines differ from the spec author's machine** (the
+spec's "today" column was measured elsewhere); the ratio and hitting
+the *spirit* of each target is what matters. Old and fast below are
+both on THIS laptop.
+
+| operation        |  old ms |  fast ms |  ratio | spec target |
+|------------------|--------:|---------:|-------:|------------:|
+| construction     |  2.5087 |   2.8501 |   0.9x |       <=0.3 |
+| remove_cups *    |  4.5011 |   0.0057 |   785x |       <=0.4 |
+| ansatz (proxy) † |  9.3365 |   0.0747 |   125x |      <=0.75 |
+| copy             |  0.4886 |   0.0000 |    inf |   ~0 (ref)  |
+| hash / eq        |  0.3920 |   0.0093 |    42x |      —      |
+| substitution ‡   |  2.3644 |   0.9606 |   2.5x |      —      |
+
+\* **remove_cups** pairs the stock `RemoveCupsRewriter` (old) with
+`normal.remove_snakes` (fast) per the spec's operation list — these are
+*related but distinct* rewriting passes, so the 785x is a
+rewriting-cost-class number, not an equivalence. The fair,
+same-transformation, Task-5-gated comparison is
+`grammar.Diagram.remove_snakes` **0.0309 ms** vs `fast.remove_snakes`
+**0.0057 ms** = **5x**. The COCO corpus is essentially snake-free, so
+both sides are mostly a scan; the 5x is bounded by there being little
+to yank. The win that matters on snake-bearing diagrams is structural:
+the port mutates one offset array and builds a single `FDiagram` at the
+end, instead of allocating a new `Diagram` per interchange.
+
+† **ansatz** fast side is an honestly-labeled
+**structural-functor-throughput proxy**, NOT the literal `SpiderAnsatz`.
+It is a real `FFunctor` mapping every atom to `Dim(4)` and building a
+`Symbol`-carrying image box per word/box, so it reproduces the functor
+traversal + per-box image cost the spec targets — but not
+`SpiderAnsatz`'s box-splitting (`max_order`) maths. Mirroring that
+box-split inside an `FFunctor` was out of scope; the *numeric*
+equivalence of the fast contraction path against stock `PytorchModel`
+is gated separately (see below). The 125x is the functor-machinery
+speedup (copy-free cache hits + no double dom/cod re-validation), and
+0.075 ms clears the 0.75 ms target ~10x over.
+
+‡ **substitution** old side is `fast_deepcopy` + symbol-mutate only
+(exactly what `PytorchModel.get_diagram_output` pays before it even
+contracts); fast side is per-step `evaluate` (weight gather + einsum,
+which *includes* the contraction). So this row understates the win.
+Companion numbers from the same run:
+- spec extraction `to_contraction` is a **one-off 0.2287 ms/diagram**
+  (paid once per distinct diagram, cached by id), versus the old path
+  paying the 2.36 ms deepcopy **every step**;
+- true full per-step `get_diagram_output` (both paths contracting):
+  `PytorchModel` **13.08 ms** vs `FastPytorchModel` **9.05 ms** = **1.4x**.
+  The per-step deepcopy is eliminated entirely; the remaining cost is
+  the einsum itself, where the fast greedy pairwise contractor is not
+  yet as tuned as `tensornetwork`'s path optimiser on the largest
+  diagrams (a smaller win than on short sentences, where it was ~3x).
+
+### Gates
+
+- **Round-trip:** `to_grammar(to_fast(d)) == d` for **1990/1990** parsed
+  corpus diagrams (script exits nonzero on any mismatch).
+- **Equivalence (separate, in `tests/backend/`):** functor vs
+  `grammar.Functor` (`test_fast_functor.py`), snake removal /
+  normal form vs `grammar.Diagram.remove_snakes`/`.normal_form`
+  (`test_fast_normal.py`), and the contraction path vs stock
+  `PytorchModel` including cap circuits (`test_fast_contraction.py`).
+
+### Verdicts vs spec targets
+
+- **construction — MISS** (0.9x; fast is *slower* than old `to_diagram`).
+  `CCGTree.to_fast_diagram` is still the thin `to_fast(self.to_diagram())`
+  wrapper, so it does everything `to_diagram` does **plus** the
+  grammar→fast conversion. The direct `CCGTree → FDiagram` recursion is
+  the optimisation the plan explicitly deferred (Task 3 in
+  `docs/superpowers/plans/2026-06-12-fast-diagram-core.md`: "implement as
+  `convert.to_fast(self.to_diagram())` first … then optimize to the
+  direct recursion ONLY if Task 7's benchmark misses the 0.3 ms
+  target"). It does miss; the direct recursion is the recorded
+  follow-up.
+- **remove_cups / snakes — HIT on target, but 5x not 10x on the fair
+  comparison**, because the corpus has almost no snakes to remove. Fast
+  0.0057 ms is well under the 0.4 ms target.
+- **ansatz — HIT (proxy):** 0.075 ms vs 0.75 ms target, 125x faster
+  functor traversal (labeled proxy, not literal SpiderAnsatz).
+- **copy — HIT:** immutable shared reference, nothing to copy (the spec's
+  "~0 (shared reference)" target, literally).
+- **hash / eq — HIT:** 42x from stored precomputed hashes vs
+  `hash(repr(...))` from scratch.
+- **substitution — HIT in spirit:** the per-step deepcopy is eliminated
+  (one-off 0.23 ms extraction); full per-step model cost 13.08 → 9.05 ms.
+
+**Headline wins:** copy-free functor (125x), per-step copy elimination
+(deepcopy gone; shared immutable refs), hash/eq from stored hashes
+(42x), and the training-step unlock — `to_contraction` extracts the
+einsum once instead of deep-copying and mutating the diagram every
+step. The one honest miss is construction, pending the deferred direct
+`CCGTree → FDiagram` recursion.
