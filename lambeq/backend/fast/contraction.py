@@ -260,12 +260,13 @@ def _einsum_pair(t1, ids1: list[int], t2, ids2: list[int],
 
 
 def _contract(factors: list[tuple[Any, list[int]]],
-              out_indices: tuple[int, ...]):
+              out_indices: tuple[int, ...],
+              default_dtype=None):
     """Greedily contract factors pairwise into the output tensor."""
     import torch
 
     if not factors:
-        return torch.ones((), dtype=torch.float32)
+        return torch.ones((), dtype=default_dtype or torch.float32)
 
     work = [(t, list(ids)) for t, ids in factors]
     out_set = set(out_indices)
@@ -416,4 +417,4 @@ def evaluate(spec: ContractionSpec, weights: dict, backend: str = 'torch'):
             arr = torch.as_tensor(payload, dtype=weight_dtype).reshape(dims)
         factors.append((arr, list(ids)))
 
-    return _contract(factors, spec.out_indices)
+    return _contract(factors, spec.out_indices, default_dtype=weight_dtype)

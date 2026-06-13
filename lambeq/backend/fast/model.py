@@ -34,6 +34,13 @@ class FastPytorchModel(PytorchModel):
 
     This targets the real-valued tensor pipeline; quantum models keep
     the original :class:`PytorchModel` contraction path.
+
+    .. note::
+        The id-keyed spec cache holds a strong reference to every
+        distinct diagram object for the model's lifetime.  This is
+        fine for the standard fixed-dataset flow, but a caller that
+        regenerates diagram objects each epoch gets no cache hits
+        and unbounded cache growth.
     """
 
     def __init__(self, tn_path_optimizer=None) -> None:

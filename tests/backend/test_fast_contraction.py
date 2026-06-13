@@ -175,6 +175,47 @@ def test_conjugate_adjoint_cases(z, is_dagger):
         f'{(expected - got).abs().max().item()}')
 
 
+def test_cup_branch():
+    """CUP branch of to_contraction: unions two frontier index ids, emits no
+    factor, and shrinks the output shape below the uncontracted product.
+
+    The CUP branch is never exercised by the corpus gate (SpiderAnsatz +
+    RemoveCupsRewriter eliminates all cups before they reach the fast core).
+    Here we build a concrete-array tensor diagram directly:
+
+      W : Dim(1) -> Dim(2, 2, 3)   (3-legged box with float32 data)
+      Cup(Dim(2), Dim(2)) @ Id(Dim(3))
+
+    Without cup unification the output would have shape (2, 2, 3); with it
+    the two Dim(2) legs are aliased to the SAME index and summed, yielding
+    shape (3,).  The numeric value must match the tensornetwork oracle.
+    """
+    from lambeq.backend.tensor import Box, Cup, Dim, Id
+
+    rng = np.random.default_rng(42)
+    box = Box('W', Dim(1), Dim(2, 2, 3),
+              data=rng.standard_normal(12).astype(np.float32))
+    # Cup contracts the first two Dim(2) cod legs; the Dim(3) wire survives.
+    diagram = box >> (Cup(Dim(2), Dim(2)) @ Id(Dim(3)))
+
+    expected = _tn_oracle(diagram)
+    spec = contraction.to_contraction(convert.to_fast(diagram))
+
+    # Verify the cup actually unified an index: the factor's first two leg
+    # ids must be identical (both mapped to the same canonical index).
+    assert len(spec.factors) == 1, 'expected exactly one tensor factor'
+    leg_ids = spec.factors[0][1]
+    assert leg_ids[0] == leg_ids[1], (
+        f'CUP did not unify the two Dim(2) indices: {leg_ids}')
+
+    got = contraction.evaluate(spec, {})
+    # Output is (3,), smaller than the uncontracted product (2*2*3 = 12).
+    assert got.shape == (3,), f'expected shape (3,), got {got.shape}'
+    assert torch.allclose(got, expected, atol=1e-5), (
+        f'CUP contraction mismatch: max_diff='
+        f'{(got - expected).abs().max().item():.2e}')
+
+
 def test_nested_cap_daggered_box_repro():
     """Minimal deterministic repro: two nested caps with a daggered
     multi-leg box bridging them.  The old code returned the transpose."""
