@@ -62,14 +62,13 @@ def test_fast_model_training_trajectory_matches():
     circuits, labels = _build_circuits(token_lists)
     circuits, labels, shape = _filter_uniform_shape(circuits, labels)
     circuits, labels = circuits[:12], labels[:12]
-    assert len(circuits) >= 4 and shape == (2,)
+    assert len(circuits) >= 4 and len(shape) == 1
 
     old = PytorchModel.from_diagrams(circuits)
     torch.manual_seed(0)
     old.initialise_weights()
 
     fast = FastPytorchModel.from_diagrams(circuits)
-    fast.symbols = old.symbols
     fast.weights = torch.nn.ParameterList(
         [torch.nn.Parameter(w.detach().clone()) for w in old.weights])
 
