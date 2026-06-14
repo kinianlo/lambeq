@@ -100,6 +100,7 @@ def test_uncurry_hybrid_path():
 
 
 def test_numeric_pipeline_matches_pytorch_model(bobcat_diagrams):
+    assert bobcat_diagrams
     torch = pytest.importorskip('torch')
     from lambeq import PytorchModel, RemoveCupsRewriter
     from lambeq.backend.fast import contraction
