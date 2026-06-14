@@ -446,9 +446,15 @@ class CCGTree:
         words, grammar = self._resolved()._to_diagram(planar)
         return words >> grammar
 
-    def to_fast_diagram(self):
+    def to_fast_diagram(self, backend='python'):
         """Build a fast-core ``FDiagram`` directly from the resolved
-        CCG tree, without allocating a ``grammar.Diagram``."""
+        CCG tree, without allocating a ``grammar.Diagram``.
+
+        With ``backend='rust'`` the diagram is assembled by the
+        ``bobcat_rs`` construction kernel instead of the Python path."""
+        if backend == 'rust':
+            from lambeq.text2diagram.ccg_tree import trees_to_fast_diagrams
+            return trees_to_fast_diagrams([self], backend='rust')[0]
         resolved = self.collapse_noun_phrases()._resolved()
         words, grammar = resolved._to_fast_diagram()
         return words >> grammar
@@ -622,3 +628,124 @@ def _fast_rule_layer(rule, dom, cod):
     if rule == CCGRule.REMOVE_PUNCTUATION_RIGHT:
         return FDiagram.id(f(left))
     raise AssertionError(f'unreachable rule {rule}')
+
+
+_RULE_TAGS = {
+    CCGRule.FORWARD_APPLICATION: 0,
+    CCGRule.BACKWARD_APPLICATION: 1,
+    CCGRule.FORWARD_COMPOSITION: 2,
+    CCGRule.BACKWARD_COMPOSITION: 3,
+    CCGRule.FORWARD_CROSSED_COMPOSITION: 4,
+    CCGRule.BACKWARD_CROSSED_COMPOSITION: 5,
+    CCGRule.GENERALIZED_FORWARD_COMPOSITION: 6,
+    CCGRule.GENERALIZED_BACKWARD_COMPOSITION: 7,
+    CCGRule.GENERALIZED_FORWARD_CROSSED_COMPOSITION: 8,
+    CCGRule.GENERALIZED_BACKWARD_CROSSED_COMPOSITION: 9,
+    CCGRule.FORWARD_TYPE_RAISING: 10,
+    CCGRule.BACKWARD_TYPE_RAISING: 11,
+    CCGRule.REMOVE_PUNCTUATION_LEFT: 12,
+    CCGRule.REMOVE_PUNCTUATION_RIGHT: 13,
+}
+
+
+def _atoms(gty):
+    """Extract the (name, z) atom sequence from a ``grammar.Ty``, to
+    match ``convert.ty_to_fast``'s ``atom(t.name, t.z) for t in ty``."""
+    return [(ob.name, ob.z) for ob in gty]
+
+
+def _emit_program(tree, out):
+    """Append the post-order build-program nodes for ``tree`` to
+    ``out``. Mirrors ``CCGTree._to_fast_diagram`` accessor-for-accessor.
+    """
+    if tree.rule == CCGRule.LEXICAL:
+        if tree.biclosed_type == CCGType.PUNCTUATION:
+            out.append((1, 0, 0, [], ''))
+        else:
+            cod = _atoms(tree.biclosed_type.to_grammar())
+            out.append((0, 0, 0, [cod], tree.text))
+        return
+    if tree.rule == CCGRule.UNARY:
+        if tree.biclosed_type.is_over:
+            left = _atoms(tree.biclosed_type.left.to_grammar())
+            right = _atoms(tree.biclosed_type.right.to_grammar().l)
+        else:
+            left = _atoms(tree.biclosed_type.left.to_grammar().r)
+            right = _atoms(tree.biclosed_type.right.to_grammar())
+        for child in tree.children:
+            _emit_program(child, out)
+        out.append((2, 0, 1, [right, left], ''))
+        return
+    for child in tree.children:
+        _emit_program(child, out)
+    tag, args = _rule_program(tree.rule,
+                              [c.biclosed_type for c in tree.children],
+                              tree.biclosed_type)
+    out.append((3, tag, len(tree.children), args, ''))
+
+
+def _rule_program(rule, dom, cod):
+    """Build the (tag, [atom-list, ...]) args for a binary or type-
+    raising rule, mirroring ``_fast_rule_layer``'s accessor logic and
+    arg order."""
+    def a(gty):
+        return _atoms(gty.to_grammar()) if hasattr(gty, 'to_grammar') \
+            else _atoms(gty)
+    tag = _RULE_TAGS[rule]
+    if rule in (CCGRule.FORWARD_TYPE_RAISING, CCGRule.BACKWARD_TYPE_RAISING):
+        return tag, [a(cod.result), a(dom[0])]
+    left, right = dom
+    if rule == CCGRule.FORWARD_APPLICATION:
+        return tag, [a(left.result), a(right)]
+    if rule == CCGRule.BACKWARD_APPLICATION:
+        return tag, [a(left), a(right.result)]
+    if rule == CCGRule.FORWARD_COMPOSITION:
+        return tag, [a(left.left), a(left.right), a(right.right)]
+    if rule == CCGRule.BACKWARD_COMPOSITION:
+        return tag, [a(left.left), a(left.right), a(right.right)]
+    if rule == CCGRule.FORWARD_CROSSED_COMPOSITION:
+        return tag, [a(left.left), a(left.right), a(right.left)]
+    if rule == CCGRule.BACKWARD_CROSSED_COMPOSITION:
+        return tag, [a(left.right), a(left.left), a(right.right)]
+    if rule == CCGRule.GENERALIZED_FORWARD_COMPOSITION:
+        mid = left.argument.to_grammar()
+        return tag, [a(left.result), _atoms(mid),
+                     _atoms(right.to_grammar()[len(mid):])]
+    if rule == CCGRule.GENERALIZED_BACKWARD_COMPOSITION:
+        mid = right.argument.to_grammar()
+        lg = left.to_grammar()
+        return tag, [_atoms(lg[:len(lg) - len(mid)]), _atoms(mid),
+                     a(right.result)]
+    if rule == CCGRule.GENERALIZED_FORWARD_CROSSED_COMPOSITION:
+        mid = left.left.to_grammar()
+        gl, join, gr = right.split(left.right)
+        return tag, [_atoms(mid), _atoms(gl), _atoms(join), _atoms(gr)]
+    if rule == CCGRule.GENERALIZED_BACKWARD_CROSSED_COMPOSITION:
+        mid = right.right.to_grammar()
+        gl, join, gr = left.split(right.left)
+        return tag, [_atoms(mid), _atoms(gl), _atoms(join), _atoms(gr)]
+    if rule == CCGRule.REMOVE_PUNCTUATION_LEFT:
+        return tag, [a(right)]
+    if rule == CCGRule.REMOVE_PUNCTUATION_RIGHT:
+        return tag, [a(left)]
+    raise AssertionError(f'unreachable rule {rule}')
+
+
+def trees_to_fast_diagrams(trees, backend='python'):
+    """Batch-build fast-core diagrams for ``trees``.
+
+    ``backend='python'`` falls back to the per-tree Python path;
+    ``backend='rust'`` emits build programs and assembles them in the
+    ``bobcat_rs`` kernel, then materialises FDiagrams via ``convert``.
+    """
+    if backend != 'rust':
+        return [t.to_fast_diagram(backend='python') for t in trees]
+    import bobcat_rs
+    from lambeq.backend.fast import convert
+    programs = []
+    for t in trees:
+        prog = []
+        _emit_program(t.collapse_noun_phrases()._resolved(), prog)
+        programs.append(prog)
+    rsdiagrams = bobcat_rs.build_diagrams(programs)
+    return [convert.rs_to_fast(rs) for rs in rsdiagrams]

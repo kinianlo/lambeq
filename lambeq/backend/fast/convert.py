@@ -151,6 +151,22 @@ def to_fast(d: grammar.Diagram) -> FDiagram:
     return FDiagram(ty_to_fast(d.dom), terms, ty_to_fast(d.cod))
 
 
+def rs_to_fast(rsdiagram) -> FDiagram:
+    """Materialise an FDiagram from a bobcat_rs RsDiagram export.
+
+    The Rust atom ids are re-interned here via atom(name, z), so the
+    result carries Python atom ids."""
+    def _fty(atoms):
+        return FTy(tuple(atom(name, z) for name, z in atoms))
+
+    dom_atoms, terms, cod_atoms = rsdiagram.export()
+    fterms = []
+    for name, b_dom, b_cod, kind, z, is_dagger, off in terms:
+        box = FBox(name, _fty(b_dom), _fty(b_cod), kind, z, bool(is_dagger))
+        fterms.append((box, int(off)))
+    return FDiagram(_fty(dom_atoms), tuple(fterms), _fty(cod_atoms))
+
+
 def to_grammar(d: FDiagram) -> grammar.Diagram:
     """Convert an :class:`FDiagram` back to a grammar diagram.
 

@@ -20,10 +20,72 @@ mod tree;
 use pyo3::exceptions::PyValueError;
 use numpy::PyUntypedArrayMethods;
 
+use crate::build::{assemble, Node};
+use crate::fdiagram::{atom, atom_name, atom_z, FDiagram, FTy};
 use crate::grammar::Grammar;
 use crate::parser::{chart_size, serialize_tree, ChartParser, SerNode};
 use crate::rules::Rules;
 use crate::tree::lexical;
+
+type AtomList = Vec<(String, i32)>;
+type PyNode = (u8, u8, u8, Vec<AtomList>, String);
+
+fn decode_types(types: Vec<AtomList>) -> Vec<FTy> {
+    types
+        .into_iter()
+        .map(|al| FTy(al.into_iter().map(|(nm, z)| atom(&nm, z)).collect()))
+        .collect()
+}
+
+fn decode_node(p: PyNode) -> Node {
+    let (node_type, rule_tag, arity, types, name) = p;
+    Node { node_type, rule_tag, arity, types: decode_types(types), name }
+}
+
+type BoxExport = (String, AtomList, AtomList, u8, i32, bool, u32);
+type DiagramExport = (AtomList, Vec<BoxExport>, AtomList);
+
+fn ty_export(ty: &FTy) -> AtomList {
+    ty.0.iter().map(|&a| (atom_name(a), atom_z(a))).collect()
+}
+
+/// A built fast-diagram, exported back to Python as flat tuples that
+/// `convert.rs_to_fast` re-interns by (name, z).
+#[pyclass]
+struct RsDiagram {
+    inner: FDiagram,
+}
+
+#[pymethods]
+impl RsDiagram {
+    fn export(&self) -> DiagramExport {
+        let terms = self
+            .inner
+            .terms
+            .iter()
+            .map(|(b, off)| {
+                (b.name.clone(), ty_export(&b.dom), ty_export(&b.cod),
+                 b.kind, b.z, b.is_dagger, *off)
+            })
+            .collect();
+        (ty_export(&self.inner.dom), terms, ty_export(&self.inner.cod))
+    }
+}
+
+/// Build a batch of fast-diagrams from post-order build programs, in
+/// parallel across rayon workers. Decoding to owned Rust runs under the
+/// GIL; the parallel `assemble` touches no Python state.
+#[pyfunction]
+fn build_diagrams(programs: Vec<Vec<PyNode>>) -> Vec<RsDiagram> {
+    let decoded: Vec<Vec<Node>> = programs
+        .into_iter()
+        .map(|prog| prog.into_iter().map(decode_node).collect())
+        .collect();
+    decoded
+        .into_par_iter()
+        .map(|nodes| RsDiagram { inner: assemble(&nodes) })
+        .collect()
+}
 
 /// One sentence's parse input: (words, per-word supertags, span scores).
 type SentenceInput = (
@@ -410,5 +472,7 @@ fn bobcat_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(debug_cat_vars, m)?)?;
     m.add_class::<RustRules>()?;
     m.add_class::<RustChartParser>()?;
+    m.add_class::<RsDiagram>()?;
+    m.add_function(wrap_pyfunction!(build_diagrams, m)?)?;
     Ok(())
 }
