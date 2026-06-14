@@ -74,17 +74,35 @@ impl RsDiagram {
 
 /// Build a batch of fast-diagrams from post-order build programs, in
 /// parallel across rayon workers. Decoding to owned Rust runs under the
-/// GIL; the parallel `assemble` touches no Python state.
+/// GIL; the parallel `assemble` touches no Python state, so the GIL is
+/// released for the whole build phase (mirroring `parse_batch`).
+///
+/// `num_threads`: `1` → strictly serial (no rayon pool); `0` → rayon
+/// default (all cores); `n > 1` → a pool of `n` workers.
 #[pyfunction]
-fn build_diagrams(programs: Vec<Vec<PyNode>>) -> Vec<RsDiagram> {
+#[pyo3(signature = (programs, num_threads = 0))]
+fn build_diagrams(
+    py: Python<'_>,
+    programs: Vec<Vec<PyNode>>,
+    num_threads: usize,
+) -> Vec<RsDiagram> {
     let decoded: Vec<Vec<Node>> = programs
         .into_iter()
         .map(|prog| prog.into_iter().map(decode_node).collect())
         .collect();
-    decoded
-        .into_par_iter()
-        .map(|nodes| RsDiagram { inner: assemble(&nodes) })
-        .collect()
+    let build_one = |nodes: Vec<Node>| RsDiagram { inner: assemble(&nodes) };
+
+    py.allow_threads(|| {
+        if num_threads == 1 {
+            decoded.into_iter().map(build_one).collect()
+        } else {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads) // 0 = rayon default (all cores)
+                .build()
+                .expect("failed to build rayon thread pool");
+            pool.install(|| decoded.into_par_iter().map(build_one).collect())
+        }
+    })
 }
 
 /// One sentence's parse input: (words, per-word supertags, span scores).
