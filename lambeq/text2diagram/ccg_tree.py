@@ -447,13 +447,48 @@ class CCGTree:
         return words >> grammar
 
     def to_fast_diagram(self):
-        """Convert tree to a fast-core ``FDiagram``.
+        """Build a fast-core ``FDiagram`` directly from the resolved
+        CCG tree, without allocating a ``grammar.Diagram``."""
+        resolved = self.collapse_noun_phrases()._resolved()
+        words, grammar = resolved._to_fast_diagram()
+        return words >> grammar
 
-        This v1 implementation routes through :meth:`to_diagram` and the
-        fast/grammar converter; direct recursion is a later optimisation.
-        """
-        from lambeq.backend.fast import convert
-        return convert.to_fast(self.to_diagram())
+    def _to_fast_diagram(self):
+        from lambeq.backend.fast import build
+        from lambeq.backend.fast.diagram import FDiagram, word
+        from lambeq.backend.fast.convert import ty_to_fast
+        from lambeq.text2diagram.ccg_rule import CCGRule
+        from lambeq.text2diagram.ccg_type import CCGType
+
+        if self.rule == CCGRule.LEXICAL:
+            if self.biclosed_type == CCGType.PUNCTUATION:
+                return FDiagram.id(), FDiagram.id()
+            cod = ty_to_fast(self.biclosed_type.to_grammar())
+            return word(self.text, cod).to_diagram(), FDiagram.id(cod)
+
+        if self.rule == CCGRule.UNARY:
+            if self.biclosed_type.is_over:
+                left = ty_to_fast(self.biclosed_type.left.to_grammar())
+                right = ty_to_fast(self.biclosed_type.right.to_grammar()).l
+            else:
+                left = ty_to_fast(self.biclosed_type.left.to_grammar()).r
+                right = ty_to_fast(self.biclosed_type.right.to_grammar())
+            this_layer = build.swaps(right, left)
+        else:
+            this_layer = _fast_rule_layer(
+                self.rule, [c.biclosed_type for c in self.children],
+                self.biclosed_type)
+
+        children = [child._to_fast_diagram() for child in self.children]
+        words_parts, diag_parts = zip(*children)
+        words = FDiagram.id()
+        for w in words_parts:
+            words = words @ w
+        diag = FDiagram.id()
+        for d in diag_parts:
+            diag = diag @ d
+        diag = diag >> this_layer
+        return words, diag
 
     def _to_diagram(self, planar: bool = False) -> tuple[Diagram, Diagram]:
         if self.rule == CCGRule.LEXICAL:
@@ -529,3 +564,61 @@ class CCGTree:
             diag >>= this_layer
 
         return words, diag
+
+
+def _fast_rule_layer(rule, dom, cod):
+    """Fast-core analogue of CCGRule.apply for resolved binary/unary
+    type-raising rules. Mirrors ccg_rule.py:204-314."""
+    from lambeq.backend.fast import build
+    from lambeq.backend.fast.diagram import FDiagram
+    from lambeq.backend.fast.convert import ty_to_fast
+    from lambeq.text2diagram.ccg_rule import CCGRule
+
+    def f(ccgtype):
+        return ty_to_fast(ccgtype.to_grammar())
+
+    if rule in (CCGRule.BACKWARD_TYPE_RAISING,
+                CCGRule.FORWARD_TYPE_RAISING):
+        result = f(cod.result)
+        dom0 = f(dom[0])
+        if rule == CCGRule.BACKWARD_TYPE_RAISING:
+            return build.btr(result, dom0)
+        return build.ftr(result, dom0)
+
+    left, right = dom
+    if rule == CCGRule.FORWARD_APPLICATION:
+        return build.fa(f(left.result), f(right))
+    if rule == CCGRule.BACKWARD_APPLICATION:
+        return build.ba(f(left), f(right.result))
+    if rule == CCGRule.FORWARD_COMPOSITION:
+        return build.fc(f(left.left), f(left.right), f(right.right))
+    if rule == CCGRule.BACKWARD_COMPOSITION:
+        return build.bc(f(left.left), f(left.right), f(right.right))
+    if rule == CCGRule.FORWARD_CROSSED_COMPOSITION:
+        return build.fx(f(left.left), f(left.right), f(right.left))
+    if rule == CCGRule.BACKWARD_CROSSED_COMPOSITION:
+        return build.bx(f(left.right), f(left.left), f(right.right))
+    if rule == CCGRule.GENERALIZED_FORWARD_COMPOSITION:
+        mid = f(left.argument)
+        return build.gfc(f(left.result), mid, f(right)[len(mid):])
+    if rule == CCGRule.GENERALIZED_BACKWARD_COMPOSITION:
+        mid = f(right.argument)
+        fl = f(left)
+        return build.gbc(fl[:len(fl) - len(mid)], mid, f(right.result))
+    if rule == CCGRule.GENERALIZED_FORWARD_CROSSED_COMPOSITION:
+        # ``CCGType.split`` returns grammar.Ty objects directly.
+        mid = f(left.left)
+        gl, join, gr = right.split(left.right)
+        return build.gfx(mid, ty_to_fast(gl), ty_to_fast(join),
+                         ty_to_fast(gr))
+    if rule == CCGRule.GENERALIZED_BACKWARD_CROSSED_COMPOSITION:
+        # ``CCGType.split`` returns grammar.Ty objects directly.
+        mid = f(right.right)
+        gl, join, gr = left.split(right.left)
+        return build.gbx(mid, ty_to_fast(gl), ty_to_fast(join),
+                         ty_to_fast(gr))
+    if rule == CCGRule.REMOVE_PUNCTUATION_LEFT:
+        return FDiagram.id(f(right))
+    if rule == CCGRule.REMOVE_PUNCTUATION_RIGHT:
+        return FDiagram.id(f(left))
+    raise AssertionError(f'unreachable rule {rule}')
