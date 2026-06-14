@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 mod category;
 mod chart;
+mod fdiagram;
 mod grammar;
 mod parser;
 mod rules;
