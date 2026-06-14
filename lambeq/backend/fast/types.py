@@ -64,6 +64,16 @@ def atom_r(i: int) -> int:
     return j
 
 
+def set_self_dual(a: int) -> None:
+    """Mark atom ``a`` as its own left and right adjoint.
+
+    Used for rotation-invariant atoms (e.g. ``Dim`` factors) whose left
+    and right adjoints are themselves.  Idempotent.
+    """
+    _L[a] = a
+    _R[a] = a
+
+
 class FTy:
     """Immutable composite type: a tuple of atom ids with
     stored hash."""

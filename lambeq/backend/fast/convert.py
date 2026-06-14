@@ -18,7 +18,8 @@ from __future__ import annotations
 from lambeq.backend import grammar
 from lambeq.backend.fast.diagram import (CAP, CUP, FBox, FDiagram, PLAIN,
                                          SPIDER, SWAP, WORD)
-from lambeq.backend.fast.types import (atom, atom_name, atom_z, FTy)
+from lambeq.backend.fast.types import (atom, atom_name, atom_z, FTy,
+                                        set_self_dual)  # noqa: E127
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,9 @@ def register_dim(n: int) -> int:
     """Intern a tensor dimension and return its atom id."""
     a = atom(f'#{n}', 0)
     _DIM_OF[a] = n
+    # Dim atoms are rotation-invariant: born self-dual regardless of the
+    # entry point that interns them (idempotent).
+    set_self_dual(a)
     return a
 
 

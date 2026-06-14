@@ -44,7 +44,6 @@ from collections.abc import Mapping
 
 from lambeq.backend import grammar
 from lambeq.backend.fast import convert
-from lambeq.backend.fast import types as _ftypes
 from lambeq.backend.fast.convert import register_dim, ty_to_grammar
 from lambeq.backend.fast.diagram import (FBox, FDiagram, spider, WORD)
 from lambeq.backend.fast.functor import FFunctor
@@ -91,22 +90,21 @@ class FSpiderAnsatz:
         """
         name = atom_name(atom_id)
         dim = self.ob_map[grammar.Ty(name)]
-        atoms = []
-        for d in dim.dim:
-            a = register_dim(d)
-            # Dim is rotation-invariant: make the atom its own adjoint.
-            _ftypes._L[a] = a
-            _ftypes._R[a] = a
-            atoms.append(a)
-        return FTy(tuple(atoms))
+        # register_dim marks every Dim atom self-dual, so FFunctor's
+        # rotation of adjoint wires is a no-op per factor.
+        return FTy(tuple(register_dim(d) for d in dim.dim))
 
     def _map_ty(self, fty: FTy) -> FTy:
-        """Dim-map a pregroup type by concatenating the image of each
-        atom."""
-        out = FTy()
-        for a in fty.atoms:
-            out = out @ self._ob(self.functor, a)
-        return out
+        """Dim-map a pregroup type via the functor's own object map.
+
+        Delegating to ``self.functor.ob`` honours each atom's winding:
+        an adjoint wire (e.g. ``n.r``) maps to the *rotated* image of
+        its base, which reverses the factor order of a multi-factor
+        ``Dim`` (``Dim(2, 5).rotate(1) == Dim(5, 2)``).  Concatenating
+        per-atom ``_ob`` images instead would drop the winding and
+        transpose the wires.
+        """
+        return self.functor.ob(fty)
 
     # -- arrows -------------------------------------------------------
     def _ar(self, functor: FFunctor, box: FBox) -> FBox | FDiagram:
@@ -131,19 +129,14 @@ class FSpiderAnsatz:
 
     def _symbol(self, name: str, fdom: FTy, fcod: FTy) -> Symbol:
         """Reproduce the legacy ansatz's Symbol for a box exactly."""
+        from lambeq.ansatz.base import BaseAnsatz
+
         gdom = ty_to_grammar(fdom)
         gcod = ty_to_grammar(fcod)
-        sym_name = self._summarise(name, gdom, gcod)
+        # Call the legacy summariser directly for byte-identical names.
+        sym_name = BaseAnsatz._summarise_box(grammar.Box(name, gdom, gcod))
         dd, dc = self._directed_products(gdom, gcod)
         return Symbol(sym_name, directed_dom=dd, directed_cod=dc)
-
-    @staticmethod
-    def _summarise(name: str, gdom: grammar.Ty, gcod: grammar.Ty) -> str:
-        """Port of ``BaseAnsatz._summarise_box`` (base.py:62-71)."""
-        dom = str(gdom).replace(' @ ', '@') if gdom else ''
-        cod = str(gcod).replace(' @ ', '@') if gcod else ''
-        raw_summary = f'{name}_{dom}_{cod}'
-        return raw_summary.translate({ord(c): f'\\{c}' for c in ':, '})
 
     def _directed_products(self, gdom: grammar.Ty,
                            gcod: grammar.Ty) -> tuple[int, int]:
