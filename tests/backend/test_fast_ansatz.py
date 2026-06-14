@@ -99,6 +99,30 @@ def test_uncurry_hybrid_path():
     assert _symbols(fast) == _legacy_symbols(legacy)
 
 
+def test_numeric_pipeline_matches_pytorch_model(bobcat_diagrams):
+    torch = pytest.importorskip('torch')
+    from lambeq import PytorchModel, RemoveCupsRewriter
+    from lambeq.backend.fast import contraction
+    from lambeq.backend.fast.ansatz import FSpiderAnsatz
+
+    ob = {t: Dim(2) for t in AtomicType}
+    rc = RemoveCupsRewriter()
+    g_circuits = [SpiderAnsatz(ob)(rc(d)) for d in bobcat_diagrams[:10]]
+
+    model = PytorchModel.from_diagrams(g_circuits)
+    torch.manual_seed(0)
+    model.initialise_weights()
+    expected = model.get_diagram_output(g_circuits)
+    weights = dict(zip(model.symbols, model.weights))
+
+    fans = FSpiderAnsatz(ob)
+    for d, exp in zip(bobcat_diagrams[:10], expected):
+        fd = fans(convert.to_fast(rc(d)))
+        spec = contraction.to_contraction(fd)
+        got = contraction.evaluate(spec, weights)
+        assert torch.allclose(got, exp, atol=1e-5), d
+
+
 def test_multi_factor_dim_wire_order():
     """Regression for the multi-factor Dim wire-order bug.
 
