@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
+mod build;
 mod category;
 mod chart;
 mod fdiagram;
