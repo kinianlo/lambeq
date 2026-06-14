@@ -672,3 +672,64 @@ Rust rewrite of the tree traversal — out of scope here.
 **Full-corpus gate:** 1990/1990 trees satisfy
 `convert.to_grammar(t.to_fast_diagram()) == t.to_diagram()` (Step-1
 script, not committed).
+
+## Rust construction (stage A)
+
+Benchmark: `benchmarks/rust_construct_bench.py /tmp/coco_bench.txt --num 2000`,
+1990/2000 parsed, best of 3 warmed repeats, i7-11800H (8 physical cores, 16 HT).
+Corpus gate: 1990/1990 `rust == python-direct` before timing.
+
+### End-to-end comparison
+
+| path | ms/diagram | diagrams/s | speedup vs python |
+|---|---:|---:|---:|
+| python-direct | 0.7429 | 1346 | 1× |
+| rust-end-to-end | 0.6150 | 1626 | 1.21× |
+
+### Phase split (Rust path)
+
+| phase | ms/diagram | diagrams/s | % of rust e2e |
+|---|---:|---:|---:|
+| emit (Python) | 0.3753 | 2664 | 61% |
+| build-serial (Rust, 1 thread) | 0.0399 | 25061 | 6.5% |
+| build-rayon (Rust, all cores) | 0.0190 | 52742 | 3.1% |
+| materialize (Python) | 0.0617 | 16208 | 10% |
+
+Rayon scaling (serial / all-cores): **2.10×** on 16 HT cores.
+
+### Build-phase throughput vs parser
+
+| | diagrams/s | ms/diagram |
+|---|---:|---:|
+| Bobcat CKY parser | ~1700 | 0.588 |
+| build-serial | 25061 | 0.040 |
+| build-rayon (all cores) | 52742 | 0.019 |
+
+### Verdicts
+
+**Rust end-to-end vs 0.76 ms Python-direct: marginal win (1.21×, 0.76→0.62 ms).**
+The Rust kernel itself is extremely fast, but the Python emit phase
+(0.375 ms, 61% of the Rust path) dominates, clawing back most of the
+savings from the build phase.
+
+**Build phase (parallel) vs parser: construction is NO LONGER the bottleneck.**
+At 52742 diagrams/s (parallel) or 25061 diagrams/s (serial), the Rust
+build phase exceeds the ~1700 sent/s parser by 31× and 15× respectively.
+The parser, not diagram construction, limits end-to-end throughput.
+
+**Amdahl limiter: emit (Python), not materialize.**
+The task description predicted `convert.rs_to_fast` (materialize) would
+be the serial limiter. In practice, materialize is only 10% of the Rust
+end-to-end; the emit phase (Python post-order program generation, 61%)
+is the actual bottleneck. Moving emit to Rust would cut the Rust path
+from 0.62 ms to ~0.08 ms and yield a ~9× end-to-end speedup over
+Python-direct — the Amdahl ceiling with this corpus.
+
+**Rayon scaling: 2.10× on 16 HT cores (well below linear).**
+On a 16-HT / 8-physical-core machine a perfect-parallel build would
+scale ~8–16×; the observed 2.10× points to contention inside Rust —
+almost certainly the intern-table `Mutex` protecting the shared
+`FTy`/`FBox` interning pool. Pre-interning atoms before the parallel
+build phase (storing per-atom indices in the program, resolving from a
+read-only table inside `assemble`) would eliminate the mutex and likely
+recover near-linear scaling.
