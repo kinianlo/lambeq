@@ -29,13 +29,12 @@ Two semantics-preserving facts make the FFunctor route exact:
   :meth:`Daggered.apply_functor`), so symbol names and directed
   dom/cod -- which the legacy ansatz also computes on the unwound,
   undaggered box -- match exactly.
-* The tensor category is *rotation-invariant* (``Dim.rotate`` is the
-  identity).  FFunctor's generic rigid rotation would otherwise send an
-  adjoint pregroup wire (e.g. ``n.r``) to a *rotated* Dim atom that the
-  contraction's ``dim_of`` table does not know about.  We therefore mark
-  every registered Dim atom as **self-dual** (its left and right
-  adjoints are itself), which turns ``_rotate_ty`` into a no-op on Dim
-  atoms and keeps every wire a registered ``z == 0`` Dim atom.
+* Every registered Dim atom is marked **self-dual** (its left and right
+  adjoints are itself), so rotating a Dim *atom* returns the same
+  ``z == 0`` atom rather than an unregistered ``z != 0`` variant.
+  FTy-level factor reversal for multi-factor ``Dim`` types still occurs
+  correctly (matching ``Dim.rotate``); only the per-atom ``z`` winding
+  is suppressed.
 """
 
 from __future__ import annotations
@@ -77,6 +76,7 @@ class FSpiderAnsatz:
         # (adjoints share their base's dim: Dim.rotate is identity).
         self._dim_of_name = {ty.name: int(dim.product)
                              for ty, dim in ob_map.items()}
+        self._legacy_ansatz = None
         self.functor = FFunctor(ob=self._ob, ar=self._ar)
 
     # -- objects ------------------------------------------------------
@@ -90,8 +90,9 @@ class FSpiderAnsatz:
         """
         name = atom_name(atom_id)
         dim = self.ob_map[grammar.Ty(name)]
-        # register_dim marks every Dim atom self-dual, so FFunctor's
-        # rotation of adjoint wires is a no-op per factor.
+        # register_dim marks every Dim atom self-dual: rotating an atom
+        # returns the same z=0 atom (no unregistered z!=0 variant);
+        # FTy-level factor reversal for multi-factor Dims still applies.
         return FTy(tuple(register_dim(d) for d in dim.dim))
 
     def _map_ty(self, fty: FTy) -> FTy:
@@ -193,7 +194,9 @@ class FSpiderAnsatz:
     def _uncurry_hybrid(self, box: FBox) -> FDiagram:
         from lambeq.ansatz.tensor import SpiderAnsatz
 
-        legacy = SpiderAnsatz(self.ob_map, self.max_order)
+        if self._legacy_ansatz is None:
+            self._legacy_ansatz = SpiderAnsatz(self.ob_map, self.max_order)
+        legacy = self._legacy_ansatz
         gbox = grammar.Box(box.name,
                            ty_to_grammar(box.dom),
                            ty_to_grammar(box.cod))
