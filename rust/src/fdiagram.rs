@@ -3,6 +3,10 @@
 //! this Rust intern table and are NOT the Python ids (materialisation
 //! re-interns by (name, z) on the Python side).
 
+// Data-model API surface consumed incrementally by build.rs/lib.rs/tests
+// and reserved for pipeline stages B/C; suppress spurious dead-code warnings.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
