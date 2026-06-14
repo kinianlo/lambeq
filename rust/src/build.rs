@@ -1,7 +1,7 @@
 //! Rust port of lambeq/backend/fast/build.py + the _to_fast_diagram
 //! stack-machine assembly. Combinators take FTy and return FDiagram.
 
-use crate::fdiagram::{atom_l, atom_r, FBox, FDiagram, FTy, CAP, CUP, SWAP};
+use crate::fdiagram::{FBox, FDiagram, FTy, CAP, CUP, SWAP};
 
 fn cup_box(a: u32, b: u32) -> FBox {
     FBox { name: "CUP".into(), dom: FTy(vec![a, b]), cod: FTy(vec![]),
@@ -28,16 +28,6 @@ pub fn cups(left: &FTy, right: &FTy) -> FDiagram {
         terms.push((cup_box(left.0[i], right.0[n - 1 - i]), i as u32));
     }
     FDiagram { dom: left.tensor(right), terms, cod: FTy(vec![]) }
-}
-
-/// Nested caps, outermost first (matches fast.diagram.caps).
-pub fn caps(left: &FTy, right: &FTy) -> FDiagram {
-    let n = left.len();
-    let mut terms = Vec::with_capacity(n);
-    for i in 0..n {
-        terms.push((cap_box(left.0[i], right.0[n - 1 - i]), i as u32));
-    }
-    FDiagram { dom: FTy(vec![]), terms, cod: left.tensor(right) }
 }
 
 /// Decomposed complex swap (mirrors fast.build.swaps / grammar.Swap).
@@ -170,7 +160,7 @@ pub fn assemble(nodes: &[Node]) -> FDiagram {
             }
             2 => {
                 // UNARY_SWAP: types = [right, left]
-                let (cw, cg) = stack.pop().unwrap();
+                let (cw, cg) = stack.pop().expect("build::assemble: stack underflow");
                 let layer = swaps(&nd.types[0], &nd.types[1]);
                 stack.push((cw, cg.then(&layer)));
             }
@@ -179,7 +169,7 @@ pub fn assemble(nodes: &[Node]) -> FDiagram {
                 let k = nd.arity as usize;
                 let mut kids: Vec<(FDiagram, FDiagram)> = Vec::with_capacity(k);
                 for _ in 0..k {
-                    kids.push(stack.pop().unwrap());
+                    kids.push(stack.pop().expect("build::assemble: stack underflow"));
                 }
                 kids.reverse(); // restore left-to-right order
                 let mut words = FDiagram::id(&FTy(vec![]));
@@ -195,7 +185,7 @@ pub fn assemble(nodes: &[Node]) -> FDiagram {
             _ => panic!("unknown node type {}", nd.node_type),
         }
     }
-    let (words, diag) = stack.pop().unwrap();
+    let (words, diag) = stack.pop().expect("build::assemble: stack underflow");
     words.then(&diag)
 }
 
@@ -222,6 +212,39 @@ mod tests {
         assert!(d.validate().is_ok());
         assert_eq!(d.cod, right.tensor(&left));
         assert!(d.terms.iter().all(|(b, _)| b.kind == SWAP));
+    }
+
+    #[test]
+    fn assemble_punctuation_rp() {
+        // word(n) + punc, RP drops the punc, keeping n.
+        let prog = vec![
+            Node { node_type: 0, rule_tag: 0, arity: 0,
+                   types: vec![n()], name: "w".into() },
+            Node { node_type: 1, rule_tag: 0, arity: 0,
+                   types: vec![], name: String::new() },
+            Node { node_type: 3, rule_tag: 13, arity: 2,
+                   types: vec![n()], name: String::new() },
+        ];
+        let d = assemble(&prog);
+        assert!(d.validate().is_ok());
+        assert_eq!(d.cod, n());
+        // exactly one term: the word box (punc dropped, RP is identity)
+        assert_eq!(d.terms.len(), 1);
+    }
+
+    #[test]
+    fn assemble_unary_swap() {
+        // word(n@s) then a unary swap (right=n, left=s) -> cod s@n.
+        let ns = n().tensor(&s());
+        let prog = vec![
+            Node { node_type: 0, rule_tag: 0, arity: 0,
+                   types: vec![ns.clone()], name: "w".into() },
+            Node { node_type: 2, rule_tag: 0, arity: 1,
+                   types: vec![n(), s()], name: String::new() },
+        ];
+        let d = assemble(&prog);
+        assert!(d.validate().is_ok());
+        assert_eq!(d.cod, s().tensor(&n()));
     }
 
     #[test]
