@@ -59,15 +59,12 @@ pub fn atom_z(i: u32) -> i32 {
 // NOTE: never call atom() while holding the lock (std Mutex is not
 // reentrant). Read (name, z) under the lock, release, intern, re-lock.
 pub fn atom_l(i: u32) -> u32 {
-    {
+    let (name, z) = {
         let g = intern().lock().unwrap();
         let j = g.l[i as usize];
         if j >= 0 {
             return j as u32;
         }
-    }
-    let (name, z) = {
-        let g = intern().lock().unwrap();
         (g.names[i as usize].clone(), g.zs[i as usize])
     };
     let j = atom(&name, z - 1);
@@ -78,15 +75,12 @@ pub fn atom_l(i: u32) -> u32 {
 }
 
 pub fn atom_r(i: u32) -> u32 {
-    {
+    let (name, z) = {
         let g = intern().lock().unwrap();
         let j = g.r[i as usize];
         if j >= 0 {
             return j as u32;
         }
-    }
-    let (name, z) = {
-        let g = intern().lock().unwrap();
         (g.names[i as usize].clone(), g.zs[i as usize])
     };
     let j = atom(&name, z + 1);
