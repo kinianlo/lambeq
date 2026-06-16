@@ -672,3 +672,58 @@ Rust rewrite of the tree traversal — out of scope here.
 **Full-corpus gate:** 1990/1990 trees satisfy
 `convert.to_grammar(t.to_fast_diagram()) == t.to_diagram()` (Step-1
 script, not committed).
+
+## Fast SpiderAnsatz (`FSpiderAnsatz`)
+
+Benchmark: `benchmarks/fastansatz_bench.py`, MS COCO corpus
+(`/tmp/coco_bench.txt`, 1000 captions, rust backend, 996 parsed,
+all 996 passed `RemoveCupsRewriter`).
+Machine: i7-11800H laptop CPU (CUDA unavailable), torch on CPU.
+ms/diagram, best of 3 warmed repeats.
+`ob = {t: Dim(2) for t in AtomicType}`.
+
+| operation              |  ms/diagram |      n |
+|------------------------|------------:|-------:|
+| legacy SpiderAnsatz    |      7.8294 |    996 |
+| fast FSpiderAnsatz     |      0.1631 |    996 |
+| convert (one-off) *    |      0.0977 |    996 |
+
+Speedup: **48x**. The ~0.1-0.2 ms target: **HIT** (0.1631 ms).
+
+\* `convert` is `convert.to_fast(d)` per diagram — paid once to
+  translate each grammar `Diagram` into an `FDiagram` before the
+  ansatz runs. This is a one-off dataset preprocessing cost, not
+  repeated per training step.
+
+**Numeric pre-check (embedded in the benchmark):** legacy
+`SpiderAnsatz` + `PytorchModel` vs fast `FSpiderAnsatz` +
+`to_contraction` + `evaluate`, `allclose` at `atol=1e-5`:
+**10/10 PASS**. The script exits nonzero on any mismatch.
+
+**Baseline note:** the legacy number here (7.83 ms) is higher than
+the 2.06 ms figure cited in the spec. The difference is corpus:
+the spec's 2.06 ms was measured on a short generated corpus;
+the 7.83 ms is on real COCO captions after `RemoveCupsRewriter`
+(longer, more complex diagrams with more boxes to split).
+The fast-diagram benchmark's proxy ansatz (Dim 4, no RemoveCups)
+measured 9.34 ms old vs 0.075 ms fast; these numbers are consistent
+when accounting for the different Dim and corpus.
+
+**Residual cost (where the 0.16 ms goes):** the `FFunctor`
+traversal itself (cache hits, no re-validation) is the bulk of
+the 125x win already measured in the proxy row.  The residual over
+the proxy (0.075 ms → 0.163 ms) is the `FSpiderAnsatz`-specific
+per-box Python work: `Symbol` object construction, `grammar.Box`
+reconstruction for the legacy `_summarise_box` name, and the
+`_directed_products` loop over grammar types.  The `_uncurry_hybrid`
+fallback (boxes with non-empty domains, which trigger a legacy
+`SpiderAnsatz` call) adds a small amount for those diagrams.
+These are irreducible Python costs for the current design; a
+Rust-native symbol-naming helper would shave most of the residual.
+
+**This is a once-per-dataset preprocessing win, not a training-step
+win.** The training-step cost is ansatz + contraction combined;
+the fast contraction path (`FastPytorchModel`) addresses the
+contraction side (13.08 → 9.05 ms/diagram). The ansatz is paid
+once at dataset build time, so even a moderate speedup here
+(48x) eliminates a meaningful preprocessing bottleneck.
