@@ -314,6 +314,10 @@ def _cups(left: FTy, right: FTy, is_reversed: bool) -> FDiagram:
     """
     if not is_reversed:
         return _fast_cups(left, right)
+    if len(left) > 1:
+        raise ValueError(
+            'Reversed composite cups are not supported; '
+            'grammar\'s Diagram.cups raises for this case too.')
     n = len(left)
     terms = tuple(
         (FBox('CUP',

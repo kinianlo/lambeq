@@ -50,3 +50,26 @@ def test_remove_cups_nested():
     rc = RemoveCupsRewriter()
     fast = convert.to_grammar(remove_cups(convert.to_fast(d)))
     assert fast == rc(d)
+
+
+def test_remove_cups_reversed_cup():
+    # Locks the reversed-cup code path in _remove_cups_pass: the
+    # "illegal cup" branch-1 rotate (``_rotate(left.dagger(), -1)``)
+    # which is never exercised by the Bobcat corpus (no reversed cups).
+    #
+    # Construction: w1 outputs N.r; w2 outputs N; a reversed cup
+    # Cup(N.r, N, is_reversed=True) contracts them.  The reversed cup
+    # has z==1 (is_reversed), so the assertion below confirms it.
+    # The oracle (RemoveCupsRewriter) absorbs the cup and produces a
+    # strictly simpler diagram, so the test is not vacuous.
+    w1 = Word('w1', N.r)
+    w2 = Word('w2', N)
+    d = (w1 @ w2) >> Cup(N.r, N, is_reversed=True)
+    # Verify the diagram genuinely contains a reversed cup.
+    assert any(isinstance(b, Cup) and b.z % 2 for b in d.boxes)
+    rc = RemoveCupsRewriter()
+    oracle = rc(d)
+    # Verify the oracle actually simplifies the diagram (non-vacuous).
+    assert oracle != d
+    fast = convert.to_grammar(remove_cups(convert.to_fast(d)))
+    assert fast == oracle
