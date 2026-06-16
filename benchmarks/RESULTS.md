@@ -727,3 +727,58 @@ the fast contraction path (`FastPytorchModel`) addresses the
 contraction side (13.08 → 9.05 ms/diagram). The ansatz is paid
 once at dataset build time, so even a moderate speedup here
 (48x) eliminates a meaningful preprocessing bottleneck.
+
+## Unified fast pipeline (Tier 1)
+
+Benchmark: `benchmarks/fastpipeline_bench.py`, MS COCO corpus
+(`/tmp/coco_bench.txt`, 400 captions, rust backend, 397 parsed,
+396 kept after modal-shape filter to shape `(2,)`).
+Machine: i7-11800H laptop CPU (CUDA unavailable), torch on CPU.
+ms/diagram, best of 3 warmed repeats.
+`ob = {t: Dim(2) for t in AtomicType}`.
+
+This section measures the **complete, ready-to-train pipeline**
+from CCG trees to model output — nothing skipped:
+
+- Legacy: `to_diagram()` → `RemoveCupsRewriter` → `SpiderAnsatz`
+  → `PytorchModel.get_diagram_output`
+- Fast: `compile_fast_circuits(trees, ob_map)` (= `to_fast_diagram`
+  + `fast.remove_cups` + `FSpiderAnsatz`, all on the fast core)
+  → `FastPytorchModel.get_diagram_output`
+
+The fast `remove_cups` is the `lambeq.backend.fast.normal.remove_cups`
+pass (Task 1, gated byte-identical against `RemoveCupsRewriter` over
+the full Bobcat corpus). It is NOT the legacy `RemoveCupsRewriter` —
+cup-removal is on the fast core throughout.
+
+| stage                      | legacy ms/diag | fast ms/diag | speedup |    n |
+|----------------------------|---------------:|-------------:|--------:|-----:|
+| preprocess                 |        13.8537 |       1.3415 |   10.3x |  396 |
+| per-step (get_diagram_out) |         5.3303 |       0.8183 |    6.5x |  396 |
+
+Combined `preprocess + 50 epochs`:
+legacy 280.37 ms/diagram vs fast 42.26 ms/diagram = **6.6x**.
+
+### Numeric pre-check
+
+Fast `FastPytorchModel.get_diagram_output` vs legacy
+`PytorchModel.get_diagram_output`, shared weights,
+`torch.allclose` at `atol=1e-5`: **10/10 PASS**.
+The script exits nonzero on any mismatch.
+
+### Caveats
+
+- **Post-parser only.** These timings begin after `BobcatParser` has
+  produced CCG trees. On CPU the tagger dominates end-to-end wall
+  time (~13-14 ms/sentence vs <2 ms/diagram preprocess), so the
+  speedups here are most relevant in the GPU / large-batch regime
+  where tagging is amortised or run in a separate process.
+- **`per-step` fast is at steady state** (spec cache warm; the
+  `ContractionSpec` is extracted once per distinct diagram object,
+  then cached for the run). First-epoch cost includes a one-off
+  extraction overhead of ~0.23 ms/diagram (see Fast diagram core
+  results above).
+- **Modal-shape filter** keeps only the most common output shape
+  (`(2,)`, 396/397 circuits) so both models can stack into a single
+  tensor call. In practice a real training loop batches by shape or
+  pads; the filter is a benchmark convenience.
