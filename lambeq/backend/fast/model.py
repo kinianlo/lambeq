@@ -96,7 +96,9 @@ class FastPytorchModel(PytorchModel):
         if len(self.weights) == 0 or not self.symbols:
             raise ValueError('Weights and/or symbols not initialised. '
                              'Instantiate through '
-                             '`FastPytorchModel.from_diagrams()`.')
+                             '`FastPytorchModel.from_fast_diagrams()` '
+                             '(fast circuits) or `.from_diagrams()` '
+                             '(legacy circuits).')
         parameters = dict(zip(self.symbols, self.weights))
         return torch.stack([
             contraction.evaluate(self._spec_for(d), parameters)
