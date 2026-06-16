@@ -48,13 +48,49 @@ class FastPytorchModel(PytorchModel):
         self._spec_cache: dict[int, tuple[object, object]] = {}
 
     def _spec_for(self, diagram):
+        from lambeq.backend.fast.diagram import FDiagram
         key = id(diagram)
         hit = self._spec_cache.get(key)
         if hit is None or hit[0] is not diagram:
-            spec = contraction.to_contraction(convert.to_fast(diagram))
+            fd = diagram if isinstance(diagram, FDiagram) \
+                else convert.to_fast(diagram)
+            spec = contraction.to_contraction(fd)
             self._spec_cache[key] = (diagram, spec)
             return spec
         return hit[1]
+
+    @classmethod
+    def from_fast_diagrams(cls, circuits, **kwargs):
+        """Build from fast FDiagram circuits (FSpiderAnsatz output).
+
+        Collects :class:`~lambeq.backend.symbol.Symbol` payloads
+        from every box in every circuit and sorts them to match
+        the ordering produced by
+        :meth:`~lambeq.training.model.Model.from_diagrams` on
+        equivalent legacy circuits, so positional weight indexing
+        is consistent between the two paths.
+
+        Parameters
+        ----------
+        circuits : list of FDiagram
+            Fast diagrams whose symbol payloads define the model's
+            parameter space.
+        **kwargs
+            Forwarded to :meth:`__init__`.
+
+        Returns
+        -------
+        FastPytorchModel
+        """
+        from lambeq.backend.symbol import Symbol
+        model = cls(**kwargs)
+        syms: set[Symbol] = set()
+        for c in circuits:
+            for b, _ in c.terms:
+                if isinstance(b.payload, Symbol):
+                    syms.add(b.payload)
+        model.symbols = sorted(syms)
+        return model
 
     def get_diagram_output(self, diagrams):
         if len(self.weights) == 0 or not self.symbols:
