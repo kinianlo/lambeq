@@ -32,3 +32,17 @@ def compile_fast_circuits(trees, ob_map: Mapping[grammar.Ty, Dim],
     """
     ansatz = FSpiderAnsatz(ob_map, max_order)
     return [ansatz(remove_cups(t.to_fast_diagram())) for t in trees]
+
+
+def compile_quantum_input(trees):
+    """Cup-reduced grammar.Diagrams for any CircuitAnsatz, built via the
+    fast front-end (fast construction + fast remove_cups).
+
+    Equivalent to ``[RemoveCupsRewriter()(t.to_diagram()) for t in
+    trees]`` but built on the fast core, so quantum preprocessing gets
+    the construction + cup-removal speedups. The quantum ansatz and
+    backends consume the result unchanged.
+    """
+    from lambeq.backend.fast import convert
+    return [convert.to_grammar(remove_cups(t.to_fast_diagram()))
+            for t in trees]
