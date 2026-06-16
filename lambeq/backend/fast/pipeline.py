@@ -43,6 +43,7 @@ def compile_quantum_input(trees):
     the construction + cup-removal speedups. The quantum ansatz and
     backends consume the result unchanged.
     """
+    # deferred: avoids a circular import via fast/__init__.py
     from lambeq.backend.fast import convert
     return [convert.to_grammar(remove_cups(t.to_fast_diagram()))
             for t in trees]
