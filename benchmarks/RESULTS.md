@@ -782,3 +782,52 @@ The script exits nonzero on any mismatch.
   (`(2,)`, 396/397 circuits) so both models can stack into a single
   tensor call. In practice a real training loop batches by shape or
   pads; the filter is a benchmark convenience.
+
+## Fast quantum front-end
+
+Benchmark: `benchmarks/fastquantum_bench.py`, MS COCO corpus
+(`/tmp/coco_bench.txt`, 400 captions, rust backend, 397 parsed).
+Machine: i7-11800H laptop CPU (CUDA unavailable), torch on CPU.
+ms/diagram, best of 3 warmed repeats.
+
+This section measures the **quantum front-end only** — cup-reduced
+`grammar.Diagram` production from CCG trees:
+
+- Legacy: `[RemoveCupsRewriter()(t.to_diagram()) for t in trees]`
+- Fast: `compile_quantum_input(trees)`
+  (= `to_fast_diagram` + `fast.remove_cups` + `convert.to_grammar`,
+  all on the fast core; output is `grammar.Diagram`)
+
+Both produce byte-identical `grammar.Diagram` objects, ready for any
+`CircuitAnsatz` (IQPAnsatz, TketAnsatz, PennyLaneAnsatz, ...).
+
+| stage                  | legacy ms/diag | fast ms/diag | speedup |    n |
+|------------------------|---------------:|-------------:|--------:|-----:|
+| quantum front-end      |         6.3832 |       1.6173 |    3.9x |  397 |
+
+### Identity pre-check
+
+`compile_quantum_input(trees[:10])[i] == RemoveCupsRewriter()(trees[i].to_diagram())`
+for all 10/10 diagrams in the gate slice: **PASS**.
+The script exits nonzero on any mismatch, so the above number comes from
+a correct build.
+
+Gate in `tests/backend/test_fast_quantum_frontend.py`:
+`test_quantum_frontend_matches_legacy` (byte-identical over the full
+Bobcat corpus fixture) and `test_iqp_circuit_equivalent` (IQPAnsatz
+circuit equivalence).
+
+### Caveats
+
+- **Front-end only.** This speedup applies to quantum **preprocessing**
+  (dataset-build time), not to quantum circuit execution.  The quantum
+  ansatz (`IQPAnsatz`, `TketAnsatz`, ...) and backend execution on
+  pennylane/tket are **unchanged and not measured**.  Circuit execution
+  dominates QML wall-clock time; the front-end win is relevant for
+  dataset-preprocessing pipelines where `to_diagram` + `RemoveCupsRewriter`
+  is the bottleneck.
+- **Post-parser only.** Timings begin after `BobcatParser` has produced
+  CCG trees; the tagger dominates on CPU (~13-14 ms/sentence).
+- The 3.9× comes from the same construction + cup-removal gains as the
+  classical pipeline (see Fast diagram core and Unified fast pipeline
+  above), carried through to quantum preprocessing.
