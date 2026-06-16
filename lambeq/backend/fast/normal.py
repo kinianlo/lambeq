@@ -24,9 +24,16 @@ the oracle, so the output is deterministic and matches the oracle after
 
 from __future__ import annotations
 
-from lambeq.backend.fast.diagram import CAP, CUP, FBox, FDiagram
+from lambeq.backend.fast.diagram import (CAP, CUP, cups as _fast_cups,
+                                         FBox, FDiagram, PLAIN)
+from lambeq.backend.fast.types import FTy
 
 Term = tuple[FBox, int]
+
+# Marker name for a compressed (multi-wire) cup, identical to the legacy
+# ``RemoveCupsRewriter``'s ``CUP_TOKEN`` so the round trip reproduces
+# the oracle's ``Box(CUP_TOKEN, dom, Ty())`` byte for byte.
+CUP_TOKEN = '**CUP**'
 
 
 class InterchangerError(Exception):
@@ -244,3 +251,161 @@ def normal_form(d: FDiagram) -> FDiagram:
                 cache.add(snapshot)
                 no_more_moves = False
     return FDiagram(fd.dom, tuple(terms), fd.cod)
+
+
+# ---------------------------------------------------------------------------
+# Cup removal: a port of the ``RemoveCupsRewriter`` oracle in
+# ``lambeq.rewrite.rewrite_diagram``.
+#
+# The oracle works on grammar ``Diagram`` fragments; this port keeps the
+# exact same control flow but on ``FDiagram`` fragments built with the
+# fast ops.  The three rich grammar operations the oracle relies on --
+# diagram ``dagger``, single-step rotation (``.r``/``.l``) and
+# ``Diagram.cups`` -- are reproduced below so the result round-trips
+# byte-identically through ``convert.to_grammar``.
+# ---------------------------------------------------------------------------
+def _then_at(diag: FDiagram, box: FDiagram, off: int) -> FDiagram:
+    """``Diagram.then_at`` for the fast core (no native equivalent)."""
+    cod = diag.cod
+    left = FDiagram.id(cod[:off])
+    right = FDiagram.id(cod[off + len(box.dom):])
+    return diag >> (left @ box @ right)
+
+
+def _rotate_box(box: FBox, z: int) -> FBox:
+    """Rotate a single box, mirroring grammar ``Box.rotate``.
+
+    Daggered / cup boxes round-trip correctly: ``box_to_grammar``
+    rebuilds them from kind + ``z`` (mod 2 for cups, full ``z`` for
+    words), and the generic ``z + z`` update preserves both readings.
+    """
+    new_dom = box.dom.r if z == 1 else box.dom.l
+    new_cod = box.cod.r if z == 1 else box.cod.l
+    return FBox(box.name, new_dom, new_cod, box.kind,
+                box.z + z, box.is_dagger, box.payload)
+
+
+def _rotate(d: FDiagram, z: int) -> FDiagram:
+    """Single-step diagram rotation (``z == +1``/``-1``).
+
+    Mirrors grammar ``Diagram.rotate``: an odd rotation flips the wire
+    order, so a box at ``off`` in a frontier of width ``W`` lands at
+    ``W - off - |dom|``; layer order is preserved.
+    """
+    terms = []
+    width = len(d.dom)
+    for box, off in d.terms:
+        new_off = width - off - len(box.dom) if z % 2 else off
+        terms.append((_rotate_box(box, z), new_off))
+        width += len(box.cod) - len(box.dom)
+    new_dom = d.dom.r if z == 1 else d.dom.l
+    new_cod = d.cod.r if z == 1 else d.cod.l
+    return FDiagram(new_dom, tuple(terms), new_cod)
+
+
+def _cups(left: FTy, right: FTy, is_reversed: bool) -> FDiagram:
+    """``Diagram.cups(left, right, is_reversed)`` for the fast core.
+
+    Normal (non-reversed) cups -- including the composite cups produced
+    by the compression pass -- are exactly ``fast.diagram.cups``.
+    Reversed cups only ever arise atomically (compression never builds a
+    reversed composite cup), so each atomic pair becomes a reversed cup
+    box (``z`` odd), matching grammar's ``Cup(..., is_reversed=True)``.
+    """
+    if not is_reversed:
+        return _fast_cups(left, right)
+    n = len(left)
+    terms = tuple(
+        (FBox('CUP',
+              FTy((left.atoms[i],)) @ FTy((right.atoms[n - 1 - i],)),
+              FTy(), CUP, z=1),
+         i)
+        for i in range(n - 1, -1, -1))
+    return FDiagram(left @ right, terms, FTy())
+
+
+def _compress_cups(d: FDiagram) -> FDiagram:
+    """Merge each adjacent nested cup pair into a ``CUP_TOKEN`` box."""
+    layers: list[Term] = []
+    for box, offset in d.terms:
+        nested = (_is_cup(box)
+                  and layers
+                  and _is_cup(layers[-1][0])
+                  and offset == layers[-1][1] - 1)
+        if nested:
+            prev_box, _ = layers[-1]
+            dom = box.dom[:1] @ prev_box.dom @ box.dom[1:]
+            layers[-1] = (FBox(CUP_TOKEN, dom, FTy(), PLAIN), offset)
+        else:
+            layers.append((box, offset))
+
+    diag = FDiagram.id(d.dom)
+    for box, offset in layers:
+        diag = _then_at(diag, box.to_diagram(), offset)
+    return diag
+
+
+def _remove_cups_pass(d: FDiagram) -> FDiagram:
+    """One greedy contraction pass (oracle ``_remove_cups``)."""
+    diags: list[FDiagram] = [FDiagram.id(d.dom)]
+    for box, offset in d.terms:
+        i = 0
+        off = offset
+        # find the first fragment the offset lands in
+        while i < len(diags) and off >= len(diags[i].cod):
+            off -= len(diags[i].cod)
+            i += 1
+        if off == 0 and len(box.dom) == 0:
+            diags.insert(i, box.to_diagram())
+        else:
+            left = diags[i]
+            right = FDiagram.id()
+            j = 1
+            # extend the right fragment until it is wide enough
+            while len(left.cod) + len(right.cod) < off + len(box.dom):
+                right = right @ diags[i + j]
+                j += 1
+
+            cod = left.cod @ right.cod
+            wires_l = FDiagram.id(cod[:off])
+            wires_r = FDiagram.id(cod[off + len(box.dom):])
+            if box.name == CUP_TOKEN or _is_cup(box):
+                pg_len = len(box.dom) // 2
+                pg_type1 = box.dom[:pg_len]
+                pg_type2 = box.dom[pg_len:]
+                if len(left.cod) == pg_len and len(left.dom) == 0:
+                    if pg_type1.r == pg_type2:
+                        new_diag = right >> (_rotate(left.dagger(), 1)
+                                             @ wires_r)
+                    else:  # illegal (reversed) cup
+                        new_diag = right >> (_rotate(left.dagger(), -1)
+                                             @ wires_r)
+                elif len(right.cod) == pg_len and len(right.dom) == 0:
+                    if pg_type1.r == pg_type2:
+                        new_diag = left >> (wires_l
+                                            @ _rotate(right.dagger(), -1))
+                    else:
+                        new_diag = left >> (wires_l
+                                            @ _rotate(right.dagger(), 1))
+                else:
+                    nbox = _cups(pg_type1, pg_type2,
+                                 pg_type2 != pg_type1.r)
+                    new_diag = (left @ right) >> (wires_l @ nbox @ wires_r)
+            else:
+                new_diag = ((left @ right)
+                            >> (wires_l @ box.to_diagram() @ wires_r))
+            diags[i:i + j] = [new_diag]
+
+    result = FDiagram.id()
+    for dg in diags:
+        result = result @ dg
+    return result
+
+
+def remove_cups(d: FDiagram) -> FDiagram:
+    """Remove cups from ``d`` (oracle ``RemoveCupsRewriter``).
+
+    Fewer cups means fewer post-selections downstream.  Equivalent to
+    ``_remove_cups(_compress_cups(_remove_cups(d)))``.
+    """
+    return _remove_cups_pass(_compress_cups(_remove_cups_pass(d)))
