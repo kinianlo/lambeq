@@ -181,8 +181,20 @@ def to_contraction(d: FDiagram) -> ContractionSpec:
         kind = box.kind
 
         if kind == CUP:
-            uf.union(dom_ids[0], dom_ids[1])
-            frontier[off:off + n_dom] = []
+            if n_dom == 0:
+                # Structural cap: a CUP box with empty dom arises
+                # from dagger+rotation in the fast remove_cups pass
+                # and is semantically equivalent to a CAP.
+                d0, d1 = dim_of(box.cod[0]), dim_of(box.cod[1])
+                ids = [fresh(d0), fresh(d1)]
+                arr = np.zeros(d0 * d1)
+                arr[0] = 1.0
+                arr[-1] = 1.0
+                factors.append((arr, ids))
+                frontier[off:off + n_dom] = ids
+            else:
+                uf.union(dom_ids[0], dom_ids[1])
+                frontier[off:off + n_dom] = []
         elif kind == SWAP:
             frontier[off], frontier[off + 1] = (frontier[off + 1],
                                                 frontier[off])
