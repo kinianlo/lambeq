@@ -175,26 +175,45 @@ def to_contraction(d: FDiagram) -> ContractionSpec:
     frontier = list(input_ids)
     factors: list[tuple[Any, list[int]]] = []
 
+    def _emit_cap(cod_ty, off: int) -> None:
+        """Emit a cap factor and splice fresh wire ids into frontier.
+
+        The dtype is left to ``evaluate`` so it follows the weights.
+        """
+        d0, d1 = dim_of(cod_ty[0]), dim_of(cod_ty[1])
+        ids = [fresh(d0), fresh(d1)]
+        arr = np.zeros(d0 * d1)
+        arr[0] = 1.0
+        arr[-1] = 1.0
+        factors.append((arr, ids))
+        frontier[off:off] = ids   # insert before off (no dom wires consumed)
+
+    def _contract_cup(dom_ids: list[int], off: int, n_dom: int) -> None:
+        """Union-find the two frontier wire ids and splice them out."""
+        uf.union(dom_ids[0], dom_ids[1])
+        frontier[off:off + n_dom] = []
+
     for box, off in d.terms:
         n_dom = len(box.dom)
         dom_ids = frontier[off:off + n_dom]
         kind = box.kind
 
         if kind == CUP:
+            n_cod = len(box.cod)
             if n_dom == 0:
-                # Structural cap: a CUP box with empty dom arises
-                # from dagger+rotation in the fast remove_cups pass
-                # and is semantically equivalent to a CAP.
-                d0, d1 = dim_of(box.cod[0]), dim_of(box.cod[1])
-                ids = [fresh(d0), fresh(d1)]
-                arr = np.zeros(d0 * d1)
-                arr[0] = 1.0
-                arr[-1] = 1.0
-                factors.append((arr, ids))
-                frontier[off:off + n_dom] = ids
+                # Structural cap: a CUP box with empty dom arises from
+                # dagger+rotation in the fast remove_cups pass and is
+                # semantically equivalent to a CAP (creates 2 wires).
+                if n_cod != 2:
+                    raise ValueError(
+                        f'unexpected CUP shape: dom {n_dom} cod {n_cod}')
+                _emit_cap(box.cod, off)
+            elif n_dom == 2:
+                # Normal CUP: contract 2 wires, no factor emitted.
+                _contract_cup(dom_ids, off, n_dom)
             else:
-                uf.union(dom_ids[0], dom_ids[1])
-                frontier[off:off + n_dom] = []
+                raise ValueError(
+                    f'unexpected CUP shape: dom {n_dom} cod {n_cod}')
         elif kind == SWAP:
             frontier[off], frontier[off + 1] = (frontier[off + 1],
                                                 frontier[off])
@@ -205,15 +224,21 @@ def to_contraction(d: FDiagram) -> ContractionSpec:
                 uf.union(rep, x)
             frontier[off:off + n_dom] = [rep] * len(box.cod)
         elif kind == CAP:
-            # Non-delta constant array; emit as an explicit factor.  The
-            # dtype is left to ``evaluate`` so it follows the weights.
-            d0, d1 = dim_of(box.cod[0]), dim_of(box.cod[1])
-            ids = [fresh(d0), fresh(d1)]
-            arr = np.zeros(d0 * d1)
-            arr[0] = 1.0
-            arr[-1] = 1.0
-            factors.append((arr, ids))
-            frontier[off:off + n_dom] = ids
+            n_cod = len(box.cod)
+            if n_cod == 2:
+                # Normal CAP: non-delta constant array;
+                # emit as an explicit factor.
+                _emit_cap(box.cod, off)
+            elif n_cod == 0:
+                # Daggered CAP: empty cod, width-2 dom →
+                # semantically a CUP: no factor, contracts 2 wires.
+                if n_dom != 2:
+                    raise ValueError(
+                        f'unexpected CAP shape: dom {n_dom} cod {n_cod}')
+                _contract_cup(dom_ids, off, n_dom)
+            else:
+                raise ValueError(
+                    f'unexpected CAP shape: dom {n_dom} cod {n_cod}')
         else:   # WORD / PLAIN: a tensor box with a payload
             # Assign leg ids in NATURAL ``dom + cod`` order; the precise
             # conjugate / adjoint permutation is reproduced on the array

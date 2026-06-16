@@ -216,6 +216,68 @@ def test_cup_branch():
         f'{(got - expected).abs().max().item():.2e}')
 
 
+def test_daggered_cap_contracts_like_cup():
+    """Daggered CAP (kind=CAP, empty cod, width-2 dom) contracts
+    like a CUP — union-find the two wires, no cap factor emitted.
+
+    FBox.dagger() keeps ``kind`` and swaps dom/cod, so a CAP FBox
+    daggered yields kind=CAP, dom=a@b, cod=() — the mirror of the
+    already-handled daggered-CUP case (kind=CUP, dom=(), cod=a@b).
+    This path is not reached by the normal tensor backend
+    (Cap.dagger() returns a grammar Cup which converts to kind=CUP),
+    but must be handled for direct fast-layer use and for symmetry.
+
+    Concretely: a WORD box W: () -> Dim(2)@Dim(2) with data = identity
+    matrix, followed by a daggered CAP consuming those two wires, should
+    produce the same scalar as W followed by a real CUP (both compute
+    sum_i W[i,i] = trace = 2).
+    """
+    from lambeq.backend.fast.diagram import FBox, FDiagram, CAP, CUP, WORD
+    from lambeq.backend.fast.types import FTy
+    from lambeq.backend.fast.convert import register_dim
+
+    a_atom = register_dim(2)
+    a_ty = FTy((a_atom,))
+    ab_ty = a_ty @ a_ty
+
+    # Concrete 2×2 identity matrix as the word payload.
+    data = np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    word_box = FBox('W_dcap', FTy(), ab_ty, WORD, payload=data)
+
+    # Build a daggered CAP via FBox.dagger() (keeps kind=CAP,
+    # swaps dom/cod).
+    cap_fbox = FBox('CAP', FTy(), ab_ty, CAP)
+    daggered_cap = cap_fbox.dagger()
+
+    # Verify the box is genuinely a daggered-cap shape.
+    assert daggered_cap.kind == CAP, (
+        f'expected kind=CAP ({CAP}), got {daggered_cap.kind}')
+    assert len(daggered_cap.cod) == 0, (
+        f'expected empty cod, got len={len(daggered_cap.cod)}')
+    assert len(daggered_cap.dom) == 2, (
+        f'expected dom width 2, got {len(daggered_cap.dom)}')
+
+    # Diagrams: word → daggered_cap  vs  word → CUP
+    dag_cap_diagram = FDiagram(
+        FTy(), ((word_box, 0), (daggered_cap, 0)), FTy())
+    cup_box = FBox('CUP', ab_ty, FTy(), CUP)
+    cup_diagram = FDiagram(
+        FTy(), ((word_box, 0), (cup_box, 0)), FTy())
+
+    dag_cap_spec = contraction.to_contraction(dag_cap_diagram)
+    cup_spec = contraction.to_contraction(cup_diagram)
+
+    # Daggered CAP must emit NO cap factor (only the word box).
+    assert len(dag_cap_spec.factors) == 1, (
+        f'daggered-cap should produce exactly 1 factor (the word box), '
+        f'got {len(dag_cap_spec.factors)}')
+
+    got = contraction.evaluate(dag_cap_spec, {})
+    expected = contraction.evaluate(cup_spec, {})
+    assert torch.allclose(got, expected, atol=1e-5), (
+        f'daggered-cap mismatch: got {got}, expected {expected}')
+
+
 def test_nested_cap_daggered_box_repro():
     """Minimal deterministic repro: two nested caps with a daggered
     multi-leg box bridging them.  The old code returned the transpose."""
