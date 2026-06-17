@@ -60,6 +60,15 @@ def test_report_corpus_coverage(bobcat_diagrams):
     print(f'\n[FRewriter coverage] corpus size: {total}')
     print(f'[FRewriter coverage] default rules changed: {n_default}')
     print(f'[FRewriter coverage] extended rules changed: {n_extended}')
+    # Guard the corpus differentials against vacuity: if no rule fires,
+    # to_grammar(fr(...)) == rw(...) holds trivially (both are identity)
+    # and validates nothing.
+    assert n_default > 0, (
+        f'default rules changed 0/{total} diagrams — '
+        'corpus differential is vacuous')
+    assert n_extended > 0, (
+        f'extended rules changed 0/{total} diagrams — '
+        'corpus differential is vacuous')
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +88,15 @@ _PER_RULE_DIAGRAMS = {
     # prepositional_phrase: cod (N >> S) >> (N >> S << N)
     'prepositional_phrase': grammar.Word(
         'in', (N >> S) >> (N >> S << N)).to_diagram(),
+    # postadverb: cod (N >> S) >> (N >> S), matched by cod (no words)
+    'postadverb': grammar.Word(
+        'quickly', (N >> S) >> (N >> S)).to_diagram(),
+    # preadverb: cod (N >> S) << (N >> S), matched by cod (no words)
+    'preadverb': grammar.Word(
+        'very', (N >> S) << (N >> S)).to_diagram(),
+    # auxiliary: same cod as preadverb, restricted to auxiliary words
+    'auxiliary': grammar.Word(
+        'is', (N >> S) << (N >> S)).to_diagram(),
 }
 
 
