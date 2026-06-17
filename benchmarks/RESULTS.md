@@ -831,3 +831,52 @@ circuit equivalence).
 - The 3.9× comes from the same construction + cup-removal gains as the
   classical pipeline (see Fast diagram core and Unified fast pipeline
   above), carried through to quantum preprocessing.
+
+---
+
+## Fast box-level Rewriter (`FRewriter`)
+
+`FRewriter` ports lambeq's box-level `Rewriter` (determiner, connector,
+coordination, curry, prepositional_phrase, auxiliary, rel-pronoun, ...)
+onto the copy-free `FFunctor`. It REUSES the legacy `RewriteRule` logic
+per matched box (reconstructing a `grammar.Box` and calling
+`rule(gbox)`); only the whole-diagram traversal goes fast. Output is
+structurally identical to the legacy `Rewriter`.
+
+Corpus: 397 COCO diagrams (rust Bobcat backend), CPU. Rules: default +
+coordination, curry, object/subject_rel_pronoun. Best of 3, 1 warm-up.
+
+| operation              |     ms/diagram |    n |
+|------------------------|---------------:|-----:|
+| legacy Rewriter        |         1.9209 |  397 |
+| fast FRewriter         |         0.0540 |  397 |
+| convert (one-off)      |         0.1641 |  397 |
+
+**Speedup (legacy / fast): 35.5×.**
+
+### Differential + coverage gate
+
+- `to_grammar(FRewriter(rules)(to_fast(d))) == Rewriter(rules)(d)` for
+  **397/397** diagrams (structurally identical). The benchmark exits
+  nonzero on any mismatch, so the number above comes from a correct
+  build.
+- **397/397** diagrams are actually rewritten by the rules, so this is
+  not a vacuous (no-rule-fires) measurement.
+- Tests in `tests/backend/test_fast_rewriter.py`: corpus differential
+  (default + extended rules), per-rule hand-built cases that each
+  genuinely fire (determiner, connector, coordination, curry,
+  prepositional_phrase), and `test_rewriter_then_pipeline_numeric`
+  (FRewriter → remove_cups → FSpiderAnsatz → contraction matches the
+  legacy Rewriter → RemoveCups → SpiderAnsatz → PytorchModel, atol=1e-5).
+
+### Caveats
+
+- **A once-per-dataset preprocessing win**, like the ansatz and
+  front-end above — not a per-training-step cost.
+- The speedup is bounded by how many boxes the rules rewrite: matched
+  fragments still reuse the legacy rule logic (small grammar cost), so
+  most of the gain is on the boxes that pass through unchanged as pure
+  `FFunctor` traversal. On this corpus every diagram is rewritten yet
+  the win is still 35.5×, because the rewritten fragments are a small
+  fraction of all boxes.
+- **Post-parser only**; timings begin after `BobcatParser`.

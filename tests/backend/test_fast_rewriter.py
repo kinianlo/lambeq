@@ -89,3 +89,45 @@ def test_per_rule_fires_and_matches_oracle(name):
     # The rule must genuinely change the diagram, else it is vacuous.
     assert rw(d) != d, f'{name}: hand-built diagram does not fire the rule'
     assert convert.to_grammar(fr(convert.to_fast(d))) == rw(d), name
+
+
+# ---------------------------------------------------------------------------
+# Composability: an FRewriter output feeds the rest of the fast pipeline
+# (remove_cups -> FSpiderAnsatz -> to_contraction) and contracts to the
+# same tensor as the legacy Rewriter -> RemoveCups -> SpiderAnsatz ->
+# PytorchModel path. Proves FRewriter slots into the fast pipeline.
+# ---------------------------------------------------------------------------
+def test_rewriter_then_pipeline_numeric(bobcat_diagrams):
+    torch = pytest.importorskip('torch')
+    from collections import Counter
+
+    from lambeq import PytorchModel, RemoveCupsRewriter, SpiderAnsatz
+    from lambeq.backend.fast import FSpiderAnsatz, contraction
+    from lambeq.backend.fast.normal import remove_cups
+    from lambeq.backend.tensor import Dim
+
+    ob = {t: Dim(2) for t in AtomicType}
+    rw, fr = Rewriter(), FRewriter()
+    rc = RemoveCupsRewriter()
+
+    # Legacy reference circuits; group by output shape and keep the
+    # modal group so get_diagram_output stacks a single batch.
+    g = [SpiderAnsatz(ob)(rc(rw(d))) for d in bobcat_diagrams]
+    shapes = [tuple(c.cod.dim) for c in g]
+    modal = Counter(shapes).most_common(1)[0][0]
+    keep = [i for i, s in enumerate(shapes) if s == modal]
+    assert len(keep) >= 4
+    diags = [bobcat_diagrams[i] for i in keep]
+    g = [g[i] for i in keep]
+
+    model = PytorchModel.from_diagrams(g)
+    torch.manual_seed(0)
+    model.initialise_weights()
+    expected = model.get_diagram_output(g)
+    weights = dict(zip(model.symbols, model.weights))
+
+    fans = FSpiderAnsatz(ob)
+    for d, e in zip(diags, expected):
+        fd = fans(remove_cups(fr(convert.to_fast(d))))
+        got = contraction.evaluate(contraction.to_contraction(fd), weights)
+        assert torch.allclose(got, e, atol=1e-5), d
