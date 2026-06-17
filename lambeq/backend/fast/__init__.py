@@ -22,6 +22,7 @@ from lambeq.backend.fast.diagram import (
     cap, caps, cup, cups, spider, swap, word,
 )
 from lambeq.backend.fast.functor import FFunctor
+from lambeq.backend.fast.rewrite import FRewriter
 from lambeq.backend.fast.normal import (normal_form, remove_cups,
                                         remove_snakes)
 from lambeq.backend.fast import build, contraction, convert
@@ -32,7 +33,7 @@ from lambeq.backend.fast.pipeline import (compile_fast_circuits,
 __all__ = ['atom', 'atom_name', 'atom_z', 'FTy', 'no_validation',
            'set_validation', 'validation', 'validation_enabled',
            'CAP', 'CUP', 'PLAIN', 'SPIDER', 'SWAP', 'WORD',
-           'FBox', 'FDiagram', 'FFunctor',
+           'FBox', 'FDiagram', 'FFunctor', 'FRewriter',
            'cap', 'caps', 'cup', 'cups', 'spider', 'swap', 'word',
            'normal_form', 'remove_cups', 'remove_snakes',
            'build', 'contraction', 'convert',
